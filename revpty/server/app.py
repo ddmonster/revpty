@@ -184,6 +184,7 @@ GUI_HTML = """
 
     let ws = null
     let receivedOutput = false
+    let baseSession = currentSession || ""
     let localEcho = true
     let promptTimer = null
     let shells = new Map()
@@ -477,6 +478,7 @@ GUI_HTML = """
     function connect() {
       const session = currentSession.trim()
       if (!session) return
+      if (!baseSession) baseSession = session
       const target = wsUrl()
       if (ws) {
         try { ws.close() } catch {}
@@ -486,9 +488,9 @@ GUI_HTML = """
       showTerminal()
       term.reset()
       const cached = shellBuffers.get(session)
+      const hadCache = !!cached
       if (cached) {
         term.write(cached)
-        receivedOutput = true
       }
 
       const isReadOnly = document.body.classList.contains('readonly-mode')
@@ -509,14 +511,16 @@ GUI_HTML = """
       ws.onopen = () => {
         ws.send(encodeFrame({ session, role: getRole(), type: "attach" }))
         sendResize()
-        receivedOutput = false
+        receivedOutput = hadCache
         localEcho = true
         if (promptTimer) clearTimeout(promptTimer)
-        promptTimer = setTimeout(() => {
-          if (!receivedOutput && ws && ws.readyState === WebSocket.OPEN && !isReadOnly) {
-            ws.send(encodeFrame({ session, role: "browser", type: "input", data: "\\n" }))
-          }
-        }, 600)
+        if (!hadCache) {
+          promptTimer = setTimeout(() => {
+            if (!receivedOutput && ws && ws.readyState === WebSocket.OPEN && !isReadOnly) {
+              ws.send(encodeFrame({ session, role: "browser", type: "input", data: "\\n" }))
+            }
+          }, 600)
+        }
         setStatus("attached")
         setLed(ledWs, "on")
         if (!isReadOnly) btnFiles.disabled = false
@@ -636,6 +640,7 @@ GUI_HTML = """
       }
       ws.close()
       ws = null
+      baseSession = ""
       
       showDashboard()
     }
@@ -717,14 +722,16 @@ GUI_HTML = """
         name.textContent = shell.id
         const actions = document.createElement("div")
         actions.className = "shell-actions"
-        const closeBtn = document.createElement("button")
-        closeBtn.className = "shell-btn"
-        closeBtn.textContent = "✖"
-        closeBtn.onclick = (evt) => {
-          evt.stopPropagation()
-          sendControl(shell.id, { op: "close_shell" })
+        if (shell.id !== baseSession) {
+          const closeBtn = document.createElement("button")
+          closeBtn.className = "shell-btn"
+          closeBtn.textContent = "✖"
+          closeBtn.onclick = (evt) => {
+            evt.stopPropagation()
+            sendControl(shell.id, { op: "close_shell" })
+          }
+          actions.appendChild(closeBtn)
         }
-        actions.appendChild(closeBtn)
         row.appendChild(name)
         row.appendChild(actions)
         row.onclick = () => {
@@ -889,6 +896,13 @@ async def websocket_handler(request):
                             except:
                                 continue
 
+                    control_payload = None
+                    if frame.type == FrameType.CONTROL.value and frame.data:
+                        try:
+                            control_payload = json.loads(frame.data)
+                        except Exception:
+                            control_payload = None
+
                     # Get peers and broadcast
                     peers = session.get_peer(frame.role)
                     if peers:
@@ -898,6 +912,13 @@ async def websocket_handler(request):
                                 await peer.send_str(msg.data)
                     elif frame.type not in (FrameType.PING.value, FrameType.PONG.value):
                         logger.debug(f"[!] No peers for {frame.session} {frame.role} -> {frame.type}")
+
+                    if (
+                        control_payload
+                        and frame.role == Role.CLIENT.value
+                        and control_payload.get("op") == "close_shell_ack"
+                    ):
+                        await session_manager.close_session(frame.session)
                     
                 except ProtocolError as e:
                     logger.error(f"[x] Protocol error: {e}")
