@@ -1,0 +1,65 @@
+    3: import unittest
+       
+    3: from aiohttp import WSMsgType
+       
+    3: from revpty.client.agent import Agent
+    3: from revpty.protocol.codec import encode
+    3: from revpty.protocol.frame import Frame, FrameType
+       
+       
+    6: class FakeMessage:
+    3:     def __init__(self, msg_type, data=None):
+    3:         self.type = msg_type
+    3:         self.data = data
+       
+       
+    6: class FakeWS:
+    3:     def __init__(self, messages):
+    6:         self._messages = list(messages)
+    6:         self.sent = []
+       
+    3:     def __aiter__(self):
+    3:         return self
+       
+    3:     async def __anext__(self):
+    6:         if not self._messages:
+    3:             raise StopAsyncIteration
+    3:         return self._messages.pop(0)
+       
+    3:     async def send_str(self, data):
+               self.sent.append(data)
+       
+    3:     def exception(self):
+               return None
+       
+       
+    6: class DummyShell:
+    3:     def __init__(self, reads=None):
+    6:         self.reads = list(reads or [])
+    6:         self.written = []
+       
+    3:     async def read(self, size=1024):
+    3:         return self.reads.pop(0)
+       
+    3:     def write(self, data):
+    3:         self.written.append(data)
+       
+       
+    6: class AgentTests(unittest.IsolatedAsyncioTestCase):
+    3:     async def test_ws_to_pty_writes_input(self):
+    3:         frame = Frame(session="s1", role="browser", type=FrameType.INPUT.value, data=b"ls")
+    3:         ws = FakeWS([FakeMessage(WSMsgType.TEXT, encode(frame))])
+    3:         agent = Agent("ws://localhost", "s1")
+    3:         agent.connected = True
+    3:         shell = DummyShell()
+    3:         await agent._ws_to_pty(ws, shell)
+    3:         self.assertEqual(shell.written, [b"ls"])
+       
+    3:     async def test_pty_to_ws_stops_on_empty(self):
+    3:         ws = FakeWS([])
+    3:         agent = Agent("ws://localhost", "s1")
+    3:         agent.connected = True
+    3:         shell = DummyShell(reads=[b""])
+    3:         await agent._pty_to_ws(ws, shell)
+    3:         self.assertFalse(agent.connected)
+    3:         self.assertEqual(ws.sent, [])

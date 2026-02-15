@@ -1,0 +1,13 @@
+[project]
+name = "revpty"
+version = "0.5.2"
+description = "Reverse PTY shell over WebSocket"
+authors = [{name = "ddmonster"}]
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = ["aiohttp"]
+
+[project.scripts]
+revpty-server = "revpty.cli.main:server"
+revpty-client = "revpty.cli.main:client"
+revpty-attach = "revpty.cli.main:attach_cmd"

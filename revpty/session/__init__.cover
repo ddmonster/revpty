@@ -1,0 +1,4 @@
+    3: """Session management layer"""
+    3: from .manager import Session, SessionManager, SessionState, SessionConfig
+       
+    3: __all__ = ['Session', 'SessionManager', 'SessionState', 'SessionConfig']

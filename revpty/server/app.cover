@@ -1,0 +1,170 @@
+    3: import logging
+    3: import asyncio
+    3: import json
+    3: import time
+    3: from aiohttp import web
+    3: from aiohttp import WSMsgType
+    3: from revpty.protocol.codec import decode, encode, ProtocolError
+    3: from revpty.protocol.frame import Frame, FrameType
+    3: from revpty.session import SessionManager, SessionConfig
+    3: from revpty.client.pty_shell import PTYShell
+       
+    6: logging.basicConfig(
+    3:     level=logging.INFO,
+    3:     format='%(asctime)s - %(levelname)s - %(message)s',
+    3:     datefmt='%Y-%m-%d %H:%M:%S'
+       )
+    3: logger = logging.getLogger(__name__)
+       
+       
+    3: def pty_factory(shell):
+           """Factory function to create PTY instances"""
+           return PTYShell(shell)
+       
+       
+       # Global Session Manager
+    3: session_manager = None
+       
+       
+    3: async def print_status():
+           """Periodically print active sessions"""
+    3:     while True:
+    3:         await asyncio.sleep(30)
+               if session_manager and session_manager.sessions:
+                   active = list(session_manager.sessions.keys())
+                   logger.info(f"[*] Active sessions: {', '.join(sorted(active))}")
+       
+       
+    3: async def websocket_handler(request):
+           """Handle WebSocket connections with Session-based routing"""
+    3:     ws = web.WebSocketResponse(heartbeat=30)
+    3:     await ws.prepare(request)
+    3:     remote_addr = request.remote or "unknown"
+           
+    3:     logger.info(f"[+] Connection from {remote_addr}")
+           
+    3:     current_session = None
+    3:     current_role = None
+           
+    3:     try:
+    6:         async for msg in ws:
+    3:             if msg.type == WSMsgType.TEXT:
+    3:                 try:
+                           # Decode and validate frame
+    3:                     frame = decode(msg.data)
+    3:                     current_session = frame.session
+    3:                     current_role = frame.role
+                           
+                           # Handle attach/detach
+    3:                     if frame.type == FrameType.ATTACH.value:
+    6:                         session = await session_manager.attach(
+    3:                             frame.session, frame.role, ws
+                               )
+    3:                         logger.info(f"[+] {frame.role.upper()} attached to '{frame.session}'")
+    3:                         peers = session.get_peer(frame.role)
+    3:                         status_payload = {
+    3:                             "session": frame.session,
+    3:                             "role": frame.role,
+    3:                             "peers": len(peers),
+    3:                             "state": session.state.value,
+                               }
+    6:                         await ws.send_str(encode(Frame(
+    3:                             session=frame.session,
+    3:                             role=frame.role,
+    3:                             type=FrameType.STATUS.value,
+    3:                             data=json.dumps(status_payload).encode("utf-8"),
+                               )))
+    3:                         continue
+                           
+                           # Handle detach
+                           if frame.type == FrameType.DETACH.value:
+                               session_manager.detach(frame.session, frame.role, ws)
+                               logger.info(f"[-] {frame.role.upper()} detached from '{frame.session}'")
+                               continue
+                           
+                           # Route data frames through session
+                           session = session_manager.get(frame.session)
+                           if not session:
+                               logger.warning(f"[!] Session '{frame.session}' not found")
+                               continue
+                           
+                           # Update session activity
+                           session.last_active = time.time()
+                           
+                           # Get peers and broadcast
+                           peers = session.get_peer(frame.role)
+                           if peers:
+                               logger.debug(f"[>] {frame.session}: {frame.role} -> {frame.type} ({len(peers)} peers)")
+                               for peer in list(peers):  # Copy to avoid modification during iteration
+                                   if not peer.closed:
+                                       await peer.send_str(msg.data)
+                           elif frame.type not in (FrameType.PING.value, FrameType.PONG.value):
+                               logger.debug(f"[!] No peers for {frame.session} {frame.role} -> {frame.type}")
+                           
+                       except ProtocolError as e:
+                           logger.error(f"[x] Protocol error: {e}")
+                           continue
+                           
+                   elif msg.type == WSMsgType.ERROR:
+                       logger.error(f"[x] WebSocket error: {ws.exception()}")
+                       break
+                       
+           except asyncio.CancelledError:
+               logger.info(f"[*] Connection cancelled for {remote_addr}")
+           except Exception as e:
+               logger.error(f"[x] Handler error: {e}")
+           finally:
+               # Detach from session
+    3:         if current_session:
+    3:             session_manager.detach(current_session, current_role, ws)
+               
+    3:         logger.info(f"[-] Connection closed: {remote_addr}")
+           
+    3:     return ws
+       
+       
+    3: async def on_startup(app):
+           """Start background tasks"""
+           global session_manager
+           
+           # Initialize Session Manager
+    6:     config = SessionConfig(
+    3:         shell="/bin/bash",
+    3:         idle_timeout=3600,
+    3:         enable_log=True
+           )
+    3:     session_manager = SessionManager(pty_factory, config)
+    3:     await session_manager.start_cleanup_task(interval=60)
+           
+           # Start status printer
+    3:     app['status_task'] = asyncio.create_task(print_status())
+       
+       
+    3: async def on_cleanup(app):
+           """Cleanup background tasks"""
+           global session_manager
+           
+    3:     if 'status_task' in app:
+    3:         app['status_task'].cancel()
+    3:         try:
+    3:             await app['status_task']
+    3:         except asyncio.CancelledError:
+    3:             pass
+           
+    3:     if session_manager:
+    6:         await session_manager.shutdown()
+       
+       
+    3: def run(host="0.0.0.0", port=8765):
+           logger.info(f"[*] revpty server v0.2.0 - Session-based Architecture")
+           logger.info(f"[*] Listening on {host}:{port}")
+           logger.info(f"[*] Protocol v1 with validation")
+           logger.info(f"[*] Session lifecycle > Connection lifecycle")
+           logger.info(f"[*] Ready for connections")
+           
+           app = web.Application()
+           app.on_startup.append(on_startup)
+           app.on_cleanup.append(on_cleanup)
+           app.router.add_get('/', websocket_handler)
+           
+           web.run_app(app, host=host, port=port, print=lambda s: None)

@@ -1,0 +1,258 @@
+    3: import asyncio
+    3: import logging
+    3: import aiohttp
+    3: from aiohttp import WSMsgType
+    3: import sys
+    3: import tty
+    3: import termios
+    3: import os
+    3: import random
+    3: import time
+    3: import json
+    3: import uuid
+    3: from enum import Enum
+    1: from select import select
+    2: 
+    3: from revpty.protocol.frame import Frame, FrameType
+    1: from revpty.protocol.codec import encode, decode
+       
+    4: 
+    4: logging.basicConfig(
+    3:     level=logging.INFO,
+    3:     format="%(asctime)s - %(levelname)s - %(message)s",
+    1:     datefmt="%H:%M:%S",
+    2: )
+    1: logger = logging.getLogger(__name__)
+       
+    4: 
+    4: class AttachState(Enum):
+    3:     INIT = "init"
+    3:     ATTACH_SENT = "attach_sent"
+    3:     ACTIVE = "active"
+    3:     DETACHED = "detached"
+    3:     CLOSED = "closed"
+    2: 
+    2: 
+    4: class InteractiveTerminal:
+    1:     def __init__(self, ws, session: str, attach_id: str):
+    1:         self.ws = ws
+    1:         self.session = session
+    3:         self.attach_id = attach_id
+    1:         self._old_tty = None
+    1:         self._running = True
+    1:         self._detached_by_user = False
+    1:         self._status_event = asyncio.Event()
+    1:         self._last_output = None
+    3:         self.state = AttachState.INIT
+       
+           # ---------- TTY handling ----------
+       
+    1:     def setup_terminal(self):
+               if not sys.stdin.isatty():
+                   return
+    2:         self._old_tty = termios.tcgetattr(sys.stdin)
+    2:         tty.setraw(sys.stdin.fileno())
+       
+    1:     def restore_terminal(self):
+               if self._old_tty:
+    2:             termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self._old_tty)
+                   print()
+       
+           # ---------- Protocol helpers ----------
+       
+    1:     async def send_frame(self, frame: Frame):
+    1:         await self.ws.send_str(encode(frame))
+       
+           # ---------- Main loop ----------
+       
+    1:     async def run(self):
+               self.setup_terminal()
+       
+               logger.info(f"[+] Attached to session '{self.session}'")
+               logger.info("[*] Press Ctrl+] to detach")
+       
+               try:
+                   # attach
+                   await self.send_frame(
+                       Frame(
+                           session=self.session,
+                           role="browser",
+                           type="attach",
+                       )
+                   )
+                   self.state = AttachState.ATTACH_SENT
+       
+                   try:
+                       await asyncio.wait_for(self._status_event.wait(), timeout=5)
+                   except asyncio.TimeoutError:
+                       logger.warning("[!] Attach status timeout")
+                   self.state = AttachState.ACTIVE
+       
+                   ws_task = asyncio.create_task(self._read_from_ws())
+                   stdin_task = asyncio.create_task(self._read_from_stdin())
+                   heartbeat_task = asyncio.create_task(self._heartbeat())
+       
+                   done, pending = await asyncio.wait(
+                       {ws_task, stdin_task, heartbeat_task},
+                       return_when=asyncio.FIRST_COMPLETED,
+                   )
+       
+                   for task in pending:
+                       task.cancel()
+       
+               except KeyboardInterrupt:
+                   logger.info("\n[*] Interrupted by user")
+       
+               except Exception as e:
+                   logger.error(f"[x] Terminal error: {e}")
+       
+               finally:
+                   try:
+                       await self.send_frame(
+                           Frame(
+                               session=self.session,
+                               role="browser",
+                               type="detach",
+    2:                     )
+    2:                 )
+    8:             except Exception:
+    6:                 pass
+    6:             self.state = AttachState.DETACHED
+                   self.restore_terminal()
+    6:             logger.info(f"[-] Detached from session '{self.session}'")
+    2:         
+    2:         self.state = AttachState.CLOSED
+    2:         return "user_detach" if self._detached_by_user else "ws_closed"
+    4: 
+    4:     # ---------- WS → stdout ----------
+    2: 
+    3:     async def _read_from_ws(self):
+    3:         try:
+    4:             async for msg in self.ws:
+    5:                 if msg.type == WSMsgType.TEXT:
+    5:                     frame = decode(msg.data)
+    2: 
+    5:                     if frame.type == FrameType.OUTPUT.value:
+    3:                         sys.stdout.buffer.write(frame.data)
+    1:                         sys.stdout.buffer.flush()
+    1:                         self._last_output = time.time()
+    2:                     elif frame.type == FrameType.PING.value:
+    2:                         await self.send_frame(Frame(
+    1:                             session=self.session,
+    1:                             role="browser",
+    1:                             type=FrameType.PONG.value,
+                               ))
+    1:                     elif frame.type == FrameType.STATUS.value:
+    1:                         self._status_event.set()
+    1:                         try:
+    1:                             payload = json.loads(frame.data.decode("utf-8")) if frame.data else {}
+    1:                             logger.info(f"[*] Attach status: {payload}")
+                               except Exception:
+                                   logger.info("[*] Attach status received")
+       
+                       elif msg.type == WSMsgType.CLOSED:
+                           logger.warning("\r[!] Connection closed by server")
+    2:                     break
+       
+                       elif msg.type == WSMsgType.ERROR:
+                           logger.error(f"\r[x] WebSocket error: {self.ws.exception()}")
+                           break
+       
+               except asyncio.CancelledError:
+                   pass
+               except Exception as e:
+                   logger.error(f"\r[x] WS read error: {e}")
+       
+           # ---------- stdin → WS ----------
+       
+    1:     async def _read_from_stdin(self):
+               fd = sys.stdin.fileno()
+               loop = asyncio.get_running_loop()
+       
+               try:
+                   while True:
+                       # wait for stdin readable
+                       await loop.run_in_executor(None, select, [fd], [], [])
+       
+                       data = os.read(fd, 1024)
+                       if not data:
+                           break
+       
+                       # Ctrl+] detach
+                       if b"\x1d" in data:
+                           logger.info("\n[*] Detaching from session...")
+                           self._detached_by_user = True
+                           break
+       
+                       await self.send_frame(
+    2:                     Frame(
+                               session=self.session,
+                               role="browser",
+                               type=FrameType.INPUT.value,
+                               data=data,
+                           )
+                       )
+       
+               except asyncio.CancelledError:
+                   pass
+               except Exception as e:
+                   logger.error(f"\r[x] stdin read error: {e}")
+       
+    1:     async def _heartbeat(self, interval: int = 20):
+               try:
+                   while True:
+                       await asyncio.sleep(interval)
+    2:                 await self.send_frame(Frame(
+                           session=self.session,
+                           role="browser",
+                           type=FrameType.PING.value,
+                       ))
+               except asyncio.CancelledError:
+                   pass
+               except Exception as e:
+                   logger.error(f"\r[x] heartbeat error: {e}")
+       
+       
+       # ---------- Public API ----------
+       
+    1: async def attach(server: str, session: str, proxy: str | None = None):
+           proxy_info = f" via {proxy}" if proxy else ""
+           logger.info(f"[*] Connecting to {server}{proxy_info}")
+           attach_id = uuid.uuid4().hex[:10]
+           attempt = 0
+           retry_delay = 1
+           metrics = {
+               "attach_id": attach_id,
+               "attempts": 0,
+               "failures": 0,
+               "start_ms": round(time.time() * 1000),
+           }
+       
+           while True:
+               attempt += 1
+               metrics["attempts"] = attempt
+               try:
+                   timeout = aiohttp.ClientTimeout(
+                       total=30,
+                       connect=10,
+                       sock_connect=10,
+                       sock_read=30
+                   )
+                   async with aiohttp.ClientSession(timeout=timeout) as http_session:
+                       async with http_session.ws_connect(server, proxy=proxy, heartbeat=30) as ws:
+                           term = InteractiveTerminal(ws, session, attach_id)
+                           result = await term.run()
+                           if result == "user_detach":
+                               break
+               except aiohttp.ClientError as e:
+                   metrics["failures"] += 1
+                   logger.error(f"[x] Connection failed: {e}")
+               except Exception as e:
+                   metrics["failures"] += 1
+                   logger.error(f"[x] Unexpected error: {e}")
+               logger.info(f"[*] Reconnecting in {retry_delay}s...")
+               await asyncio.sleep(retry_delay)
+               retry_delay = min(retry_delay * 2, 30) + random.uniform(0, 0.5)
+       
+           logger.info("[*] Attach session ended")
+           logger.info(f"[*] attach metrics: {metrics}")

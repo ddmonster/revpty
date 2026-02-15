@@ -1,0 +1,94 @@
+    3: from dataclasses import dataclass
+    3: from typing import Optional, Literal
+    3: from enum import Enum
+       
+       
+    6: class FrameType(Enum):
+    3:     """Protocol frame types with validation rules"""
+    3:     ATTACH = "attach"       # Bind to session
+    3:     DETACH = "detach"       # Unbind from session
+    3:     INPUT = "input"         # stdin (requires data)
+    3:     OUTPUT = "output"       # stdout (requires data)
+    3:     RESIZE = "resize"       # TTY resize (requires rows, cols)
+    3:     PING = "ping"           # Heartbeat
+    3:     PONG = "pong"           # Heartbeat response
+    3:     STATUS = "status"       # Session/peer status message
+           
+    6:     @classmethod
+    6:     def is_valid(cls, value: str) -> bool:
+   33:         return value in cls._value2member_map_
+       
+       
+    6: class Role(Enum):
+    3:     """Connection roles"""
+    3:     CLIENT = "client"       # PTY owner
+    3:     BROWSER = "browser"     # Terminal user
+    3:     AGENT = "agent"         # AI/automation (future)
+       
+       
+    3: PROTOCOL_VERSION = 1
+       
+       
+    9: @dataclass
+    6: class Frame:
+    3:     """Protocol frame with version and validation"""
+    3:     v: int = PROTOCOL_VERSION
+    3:     session: str = ""
+    3:     role: str = ""
+    3:     type: str = ""
+    3:     data: Optional[bytes] = None
+    3:     rows: Optional[int] = None
+    3:     cols: Optional[int] = None
+    3:     ts: Optional[float] = None  # Timestamp for debugging/auditing
+           
+    3:     def validate(self) -> tuple[bool, Optional[str]]:
+               """Validate frame fields and constraints
+               
+               Returns:
+                   (is_valid, error_message)
+               """
+               # Check protocol version
+   33:         if self.v != PROTOCOL_VERSION:
+                   return False, f"Unsupported protocol version: {self.v} (expected {PROTOCOL_VERSION})"
+               
+               # Check frame type
+   33:         if not FrameType.is_valid(self.type):
+    3:             return False, f"Invalid frame type: {self.type}"
+               
+               # Check role
+  120:         if self.role not in [r.value for r in Role]:
+                   return False, f"Invalid role: {self.role}"
+               
+               # Check field constraints based on type
+   30:         frame_type = FrameType(self.type)
+               
+   30:         if frame_type == FrameType.INPUT:
+    6:             if not self.data:
+                       return False, "INPUT frame requires data field"
+    6:             if self.rows is not None or self.cols is not None:
+                       return False, "INPUT frame should not have rows/cols"
+               
+   24:         elif frame_type == FrameType.OUTPUT:
+    6:             if not self.data:
+                       return False, "OUTPUT frame requires data field"
+    6:             if self.rows is not None or self.cols is not None:
+                       return False, "OUTPUT frame should not have rows/cols"
+               
+   18:         elif frame_type == FrameType.RESIZE:
+                   if self.rows is None or self.cols is None:
+                       return False, "RESIZE frame requires both rows and cols"
+                   if self.data is not None:
+                       return False, "RESIZE frame should not have data"
+               
+   36:         elif frame_type in (FrameType.ATTACH, FrameType.DETACH, 
+   18:                            FrameType.PING, FrameType.PONG):
+    9:             if self.data is not None:
+                       return False, f"{self.type.upper()} frame should not have data"
+    9:             if self.rows is not None or self.cols is not None:
+                       return False, f"{self.type.upper()} frame should not have rows/cols"
+               
+    9:         elif frame_type == FrameType.STATUS:
+    9:             if self.rows is not None or self.cols is not None:
+                       return False, "STATUS frame should not have rows/cols"
+               
+   30:         return True, None

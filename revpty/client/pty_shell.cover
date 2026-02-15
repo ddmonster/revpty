@@ -1,0 +1,139 @@
+    3: import asyncio
+    3: import errno
+    3: import os
+    3: import pty
+    3: import subprocess
+       
+       
+    6: class PTYShell:
+    3:     """
+           Manages a shell process using subprocess.Popen with pseudo-terminal (PTY).
+       
+           This approach provides better process management and control compared to pty.fork().
+           """
+       
+    3:     def __init__(self, shell="/bin/bash"):
+               """
+               Initialize the PTYShell.
+       
+               Args:
+                   shell: Path to the shell executable (default: /bin/bash)
+               """
+               self.shell = shell
+               self.master = None
+               self.slave = None
+               self.process = None
+       
+    3:     def start(self):
+               """
+               Start the shell process with a pseudo-terminal.
+       
+               Creates a PTY pair and spawns the shell process with the slave PTY
+               connected to stdin/stdout/stderr.
+               """
+               # Create pseudo-terminal pair
+               self.master, self.slave = pty.openpty()
+       
+               # Start shell with PTY slave as stdin/stdout/stderr
+               self.process = subprocess.Popen(
+                   [self.shell],
+                   stdin=self.slave,
+                   stdout=self.slave,
+                   stderr=self.slave,
+                   close_fds=True,
+                   # Don't buffer output
+                   bufsize=0,
+               )
+       
+               # Close slave fd in parent - child has its own copy
+               os.close(self.slave)
+               self.slave = None
+       
+    3:     async def read(self, size: int = 1024):
+               """
+               Asynchronously read data from the PTY master.
+       
+               Args:
+                   size: Maximum number of bytes to read (default: 1024)
+       
+               Returns:
+                   bytes: Data read from the PTY, or empty bytes if EOF
+               """
+               if self.master is None:
+                   raise RuntimeError("PTY master is not initialized")
+               loop = asyncio.get_running_loop()
+               try:
+                   return await loop.run_in_executor(None, os.read, self.master, size)
+               except OSError as e:
+                   if e.errno == errno.EIO:
+                       # PTY closed - return empty bytes to signal EOF
+                       return b""
+                   raise
+       
+    3:     def write(self, data: bytes):
+               """
+               Write data to the PTY master (sends to shell stdin).
+       
+               Args:
+                   data: Bytes to write to the shell
+               """
+               if self.master is None:
+                   raise RuntimeError("PTY master is not initialized")
+               os.write(self.master, data)
+       
+    3:     def stop(self):
+               """
+               Stop the shell process and clean up resources.
+       
+               Terminates the shell process gracefully and closes the PTY master.
+               """
+               # Close the PTY master first
+               if self.master is not None:
+                   try:
+                       os.close(self.master)
+                   except OSError:
+                       pass
+                   self.master = None
+       
+               # Terminate the process
+               if self.process is not None:
+                   try:
+                       self.process.terminate()
+                       # Wait up to 1 second for graceful termination
+                       self.process.wait(timeout=1)
+                   except (subprocess.TimeoutExpired, OSError):
+                       # Force kill if it doesn't terminate gracefully
+                       try:
+                           self.process.kill()
+                       except OSError:
+                           pass
+                   self.process = None
+       
+    3:     def is_running(self):
+               """
+               Check if the shell process is still running.
+       
+               Returns:
+                   bool: True if the process is running, False otherwise
+               """
+               return self.process is not None and self.process.poll() is None
+       
+    3:     def fileno(self):
+               """
+               Get the file descriptor of the PTY master.
+       
+               Useful for select/poll operations.
+       
+               Returns:
+                   int: File descriptor number
+               """
+               return self.master
+       
+    3:     def __enter__(self):
+               """Context manager entry."""
+               self.start()
+               return self
+       
+    3:     def __exit__(self, exc_type, exc_val, exc_tb):
+               """Context manager exit - ensures cleanup."""
+               self.stop()

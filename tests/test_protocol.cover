@@ -1,0 +1,42 @@
+    3: import random
+    3: import string
+    3: import unittest
+       
+    3: from revpty.protocol.codec import encode, decode, ProtocolError
+    3: from revpty.protocol.frame import Frame, FrameType
+       
+       
+    6: class ProtocolTests(unittest.TestCase):
+    3:     def test_encode_decode_input(self):
+    3:         frame = Frame(session="s1", role="client", type=FrameType.INPUT.value, data=b"ls\n")
+    3:         raw = encode(frame)
+    3:         decoded = decode(raw)
+    3:         self.assertEqual(decoded.type, FrameType.INPUT.value)
+    3:         self.assertEqual(decoded.data, b"ls\n")
+       
+    3:     def test_encode_decode_output(self):
+    3:         frame = Frame(session="s1", role="client", type=FrameType.OUTPUT.value, data=b"ok")
+    3:         raw = encode(frame)
+    3:         decoded = decode(raw)
+    3:         self.assertEqual(decoded.type, FrameType.OUTPUT.value)
+    3:         self.assertEqual(decoded.data, b"ok")
+       
+    3:     def test_encode_decode_status(self):
+    3:         frame = Frame(session="s1", role="browser", type=FrameType.STATUS.value, data=b'{"peers":0}')
+    3:         raw = encode(frame)
+    3:         decoded = decode(raw)
+    3:         self.assertEqual(decoded.type, FrameType.STATUS.value)
+    3:         self.assertEqual(decoded.data, b'{"peers":0}')
+       
+    3:     def test_invalid_frame_type(self):
+    3:         raw = encode(Frame(session="s1", role="client", type="stdin", data=b"bad"))
+    6:         with self.assertRaises(ProtocolError):
+    3:             decode(raw)
+       
+    3:     def test_fuzz_decode_invalid(self):
+  303:         for _ in range(100):
+19800:             raw = "".join(random.choice(string.printable) for _ in range(64))
+  300:             try:
+  300:                 decode(raw)
+  300:             except ProtocolError:
+  300:                 continue

@@ -1,0 +1,30 @@
+    3: import unittest
+       
+    3: from revpty.session.manager import SessionManager, SessionConfig, SessionState
+       
+       
+    6: class DummyPTY:
+    3:     def __init__(self, shell):
+    6:         self.shell = shell
+    6:         self.started = False
+    6:         self.stopped = False
+       
+    3:     def start(self):
+    6:         self.started = True
+       
+    3:     def stop(self):
+    3:         self.stopped = True
+       
+       
+    6: class SessionManagerTests(unittest.IsolatedAsyncioTestCase):
+    3:     async def test_attach_starts_pty_for_client(self):
+    6:         manager = SessionManager(lambda shell: DummyPTY(shell), SessionConfig())
+    3:         session = await manager.attach("s1", "client", object())
+    3:         self.assertEqual(session.state, SessionState.RUNNING)
+    3:         self.assertTrue(session.pty.started)
+       
+    3:     async def test_close_session_stops_pty(self):
+    6:         manager = SessionManager(lambda shell: DummyPTY(shell), SessionConfig())
+    3:         session = await manager.attach("s1", "client", object())
+    3:         await manager.close_session("s1")
+    3:         self.assertTrue(session.pty is None or session.pty.stopped)

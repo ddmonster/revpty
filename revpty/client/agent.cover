@@ -1,0 +1,227 @@
+    3: import asyncio
+    3: import logging
+    3: import signal
+    3: import random
+    3: import time
+    3: import aiohttp
+    3: from aiohttp import ClientSession, WSMsgType
+    3: from revpty.protocol.frame import Frame
+    3: from revpty.protocol.codec import encode, decode
+    3: from .pty_shell import PTYShell
+       
+    6: logging.basicConfig(
+    3:     level=logging.INFO,
+    3:     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    3:     datefmt='%Y-%m-%d %H:%M:%S'
+       )
+    3: logger = logging.getLogger(__name__)
+       
+       
+    6: class Agent:
+    3:     def __init__(self, server, session, shell="/bin/bash", proxy=None, pty_factory=PTYShell):
+    6:         self.server = server
+    6:         self.session = session
+    6:         self.shell = shell
+    6:         self.proxy = proxy
+    6:         self.running = True
+    6:         self.connected = False
+    6:         self.pty_factory = pty_factory
+    6:         self.metrics = {
+    6:             "connect_attempts": 0,
+    6:             "connect_successes": 0,
+    6:             "connect_failures": 0,
+    6:             "last_connect_ms": None,
+               }
+       
+    3:     async def _heartbeat(self, ws, interval=30):
+               """Send periodic heartbeat to keep connection alive"""
+               try:
+                   while self.connected:
+                       await asyncio.sleep(interval)
+                       if self.connected:
+                           await ws.send_str(encode(Frame(
+                               session=self.session,
+                               role="client",
+                               type="ping"
+                           )))
+                           logger.debug("[>] Heartbeat sent")
+               except asyncio.CancelledError:
+                   pass
+               except Exception as e:
+                   logger.error(f"[x] Heartbeat error: {e}")
+                   self.connected = False
+       
+    3:     async def _ws_to_pty(self, ws, shell):
+               """Forward WebSocket messages to PTY"""
+    3:         try:
+    6:             async for msg in ws:
+    3:                 if not self.connected:
+                           break
+                           
+    3:                 if msg.type == WSMsgType.TEXT:
+    3:                     frame = decode(msg.data)
+    3:                     logger.debug(f"[<] Frame: {frame.type} from {frame.role}, data_len={len(frame.data) if frame.data else 0}")
+                           
+    3:                     if frame.type == "input":
+    3:                         logger.info(f"[>] Writing to PTY: {frame.data!r}")
+    3:                         shell.write(frame.data)
+                           elif frame.type == "ping":
+                               logger.debug("[<] Ping received, sending pong")
+                               await ws.send_str(encode(Frame(
+                                   session=self.session,
+                                   role="client",
+                                   type="pong"
+                               )))
+                       elif msg.type == WSMsgType.ERROR:
+                           logger.error(f"[x] WebSocket error: {ws.exception()}")
+                           break
+                       elif msg.type == WSMsgType.CLOSED:
+                           logger.warning("[!] Connection closed by server")
+                           break
+               except Exception as e:
+                   logger.error(f"[x] Error in ws_to_pty: {e}")
+               finally:
+    3:             self.connected = False
+       
+    3:     async def _pty_to_ws(self, ws, shell):
+               """Forward PTY output to WebSocket"""
+    3:         try:
+    3:             while self.connected:
+    3:                 try:
+    3:                     data = await asyncio.wait_for(shell.read(), timeout=0.1)
+    3:                     if not data:
+    3:                         break
+                           await ws.send_str(encode(Frame(
+                               session=self.session,
+                               role="client",
+                               type="output",
+                               data=data
+                           )))
+                       except asyncio.TimeoutError:
+                           continue
+               except Exception as e:
+                   logger.error(f"[x] Error in pty_to_ws: {e}")
+               finally:
+    3:             self.connected = False
+       
+    3:     async def _connect_with_retry(self, shell):
+               """Connect to server with infinite retry"""
+               retry_count = 0
+               retry_delay = 1
+               
+               while self.running:
+                   try:
+                       proxy_info = f" via {self.proxy}" if self.proxy else ""
+                       self.metrics["connect_attempts"] += 1
+                       connect_start = time.perf_counter()
+                       
+                       timeout = aiohttp.ClientTimeout(
+                           total=30,
+                           connect=10,
+                           sock_connect=10,
+                           sock_read=30
+                       )
+                       
+                       async with ClientSession(timeout=timeout) as http_session:
+                           logger.info(f"[*] Connecting to {self.server}{proxy_info}... (attempt #{retry_count + 1})")
+                           
+                           async with http_session.ws_connect(
+                               self.server, 
+                               proxy=self.proxy,
+                               heartbeat=30,
+                               compress=False
+                           ) as ws:
+                               self.metrics["last_connect_ms"] = round((time.perf_counter() - connect_start) * 1000, 2)
+                               retry_count = 0
+                               retry_delay = 1
+                               self.connected = True
+                               self.metrics["connect_successes"] += 1
+                               
+                               # Send attach frame
+                               await ws.send_str(encode(Frame(
+                                   session=self.session,
+                                   role="client",
+                                   type="attach"
+                               )))
+                               logger.info(f"[+] Connected to session '{self.session}'")
+                               
+                               # Start tasks
+                               heartbeat_task = asyncio.create_task(self._heartbeat(ws))
+                               ws_to_pty_task = asyncio.create_task(self._ws_to_pty(ws, shell))
+                               pty_to_ws_task = asyncio.create_task(self._pty_to_ws(ws, shell))
+                               
+                               # Wait for any task to finish
+                               done, pending = await asyncio.wait(
+                                   [heartbeat_task, ws_to_pty_task, pty_to_ws_task],
+                                   return_when=asyncio.FIRST_COMPLETED
+                               )
+                               
+                               # Cancel remaining tasks
+                               for task in pending:
+                                   task.cancel()
+                                   try:
+                                       await task
+                                   except asyncio.CancelledError:
+                                       pass
+                               
+                               self.connected = False
+                               
+                   except asyncio.CancelledError:
+                       logger.info("[*] Connection cancelled")
+                       break
+                   except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as e:
+                       self.connected = False
+                       retry_count += 1
+                       self.metrics["connect_failures"] += 1
+                       logger.warning(f"[!] Connection failed: {type(e).__name__}: {e}")
+                       logger.info(f"[*] Reconnecting in {retry_delay}s... (attempt #{retry_count})")
+                       
+                       try:
+                           await asyncio.sleep(retry_delay)
+                       except asyncio.CancelledError:
+                           break
+                       
+                       # Exponential backoff with jitter
+                       retry_delay = min(retry_delay * 2, 30)
+                       retry_delay = retry_delay + random.uniform(0, 0.5)
+                   except Exception as e:
+                       self.connected = False
+                       logger.error(f"[x] Unexpected error: {e}")
+                       break
+       
+    3:     async def run(self):
+               """Main agent entry point"""
+               logger.info(f"[*] revpty client starting")
+               logger.info(f"[*] Session: {self.session}")
+               logger.info(f"[*] Shell: {self.shell}")
+               logger.info(f"[*] Server: {self.server}")
+               
+               if self.proxy:
+                   logger.info(f"[*] Proxy: {self.proxy}")
+               
+               # Start PTY shell once
+               shell = self.pty_factory(self.shell)
+               shell.start()
+               logger.info(f"[+] PTY shell started")
+               
+               # Setup signal handlers
+               def signal_handler():
+                   logger.info("[*] Received shutdown signal")
+                   self.running = False
+                   self.connected = False
+               
+               for sig in (signal.SIGTERM, signal.SIGINT):
+                   asyncio.get_running_loop().add_signal_handler(sig, signal_handler)
+               
+               try:
+                   # Start connection with retry loop
+                   await self._connect_with_retry(shell)
+               except asyncio.CancelledError:
+                   logger.info("[*] Agent cancelled")
+               except Exception as e:
+                   logger.error(f"[x] Agent error: {e}")
+               finally:
+                   self.running = False
+                   self.connected = False
+                   logger.info("[*] revpty client stopped")
+                   logger.info(f"[*] client metrics: {self.metrics}")

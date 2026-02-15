@@ -1,0 +1,72 @@
+    3: import io
+    3: import sys
+    3: import unittest
+       
+    3: from aiohttp import WSMsgType
+       
+    3: from revpty.cli.attach import InteractiveTerminal
+    3: from revpty.protocol.codec import encode, decode
+    3: from revpty.protocol.frame import Frame, FrameType
+       
+       
+    6: class FakeMessage:
+    3:     def __init__(self, msg_type, data=None):
+    9:         self.type = msg_type
+    9:         self.data = data
+       
+       
+    6: class FakeWS:
+    3:     def __init__(self, messages):
+    3:         self._messages = list(messages)
+    3:         self.sent = []
+       
+    3:     def __aiter__(self):
+    3:         return self
+       
+    3:     async def __anext__(self):
+   12:         if not self._messages:
+    3:             raise StopAsyncIteration
+    9:         return self._messages.pop(0)
+       
+    3:     async def send_str(self, data):
+    3:         self.sent.append(data)
+       
+    3:     def exception(self):
+               return None
+       
+       
+    6: class DummyStdout:
+    3:     def __init__(self):
+    3:         self.buffer = io.BytesIO()
+       
+    3:     def write(self, value):
+               return len(value)
+       
+    3:     def flush(self):
+               pass
+       
+       
+    6: class AttachTerminalTests(unittest.IsolatedAsyncioTestCase):
+    3:     async def test_read_from_ws_handles_output_and_ping(self):
+    3:         output_frame = Frame(session="s1", role="client", type=FrameType.OUTPUT.value, data=b"ok")
+    3:         ping_frame = Frame(session="s1", role="client", type=FrameType.PING.value)
+    3:         status_frame = Frame(session="s1", role="browser", type=FrameType.STATUS.value, data=b'{"peers":0}')
+    6:         ws = FakeWS([
+    3:             FakeMessage(WSMsgType.TEXT, encode(output_frame)),
+    3:             FakeMessage(WSMsgType.TEXT, encode(ping_frame)),
+    3:             FakeMessage(WSMsgType.TEXT, encode(status_frame)),
+               ])
+    3:         term = InteractiveTerminal(ws, "s1", "testattach")
+       
+    3:         original_stdout = sys.stdout
+    3:         sys.stdout = DummyStdout()
+    3:         try:
+    3:             await term._read_from_ws()
+    3:             self.assertEqual(sys.stdout.buffer.getvalue(), b"ok")
+    3:             self.assertTrue(term._status_event.is_set())
+               finally:
+    3:             sys.stdout = original_stdout
+       
+    3:         self.assertTrue(ws.sent)
+    6:         sent_frames = [decode(item) for item in ws.sent]
+    6:         self.assertTrue(any(f.type == FrameType.PONG.value for f in sent_frames))
