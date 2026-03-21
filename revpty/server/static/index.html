@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>revpty GUI</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+      <div class="bar">
+    <button id="connect">Connect</button>
+    <button id="disconnect" disabled>Disconnect</button>
+    <button id="btn-files" disabled>Files</button>
+    <button id="btn-share" disabled>Share</button>
+    <button id="btn-tunnels" disabled>Tunnels</button>
+    <div id="status-container">
+        <div><span class="label">WS</span><span id="led-ws" class="led off"></span></div>
+        <div><span class="label">CLIENT</span><span id="led-client" class="led off"></span></div>
+        <div id="status">idle</div>
+    </div>
+  </div>
+  <div id="workspace">
+      <div id="shell-sidebar">
+          <div class="shell-header">
+              <span>Shells</span>
+              <button id="btn-new-shell" disabled>New</button>
+          </div>
+          <div id="shell-list"></div>
+      </div>
+      <div id="main-area">
+          <div id="terminal"></div>
+      </div>
+  </div>
+  <div id="file-explorer">
+      <div class="fe-header">
+          <span>File Explorer</span>
+          <div>
+              <button class="btn-sm" onclick="triggerUpload()" title="Upload File">⬆️</button>
+              <button class="btn-sm" onclick="hideFiles()">Close</button>
+          </div>
+      </div>
+      <div class="fe-path" id="fe-current-path">/</div>
+      <div class="fe-list" id="fe-list"></div>
+      <input type="file" id="upload-input" style="display: none" />
+      <div class="transfer-bar" id="transfer-bar"><div class="fill" id="transfer-fill"></div></div>
+      <div class="transfer-info" id="transfer-info"></div>
+  </div>
+  <div id="editor-modal">
+      <div class="editor-container">
+          <div class="editor-header">
+              <span id="editor-filename">filename.txt</span>
+              <div>
+                  <button class="btn-sm" onclick="saveFile()">Save</button>
+                  <button class="btn-sm" onclick="closeEditor()">Close</button>
+              </div>
+          </div>
+          <textarea class="editor-content" id="editor-text"></textarea>
+      </div>
+  </div>
+  <div id="share-modal">
+      <div class="share-container">
+          <h3>Share Session</h3>
+          <div class="share-modes">
+              <label><input type="radio" name="share-mode" value="ro" checked /> Read Only</label>
+              <label><input type="radio" name="share-mode" value="rw" /> Full Control</label>
+          </div>
+          <button class="btn-sm" id="btn-gen-share">Generate Link</button>
+          <div class="share-result" id="share-result" style="display:none">
+              <div class="share-link">
+                  <input type="text" id="share-url" readonly />
+                  <button class="btn-sm" id="btn-copy-share">Copy</button>
+              </div>
+          </div>
+          <div style="margin-top:15px;text-align:right">
+              <button class="btn-sm" onclick="closeShareModal()">Close</button>
+          </div>
+      </div>
+  </div>
+  <div id="tunnel-modal">
+      <div class="tunnel-container">
+          <h3>HTTP Tunnels</h3>
+          <div id="tunnel-list"></div>
+          <div class="tunnel-form">
+              <input type="number" id="tunnel-local-port" placeholder="Service Port" />
+              <input type="text" id="tunnel-local-host" placeholder="127.0.0.1" value="127.0.0.1" />
+              <button class="btn-sm" id="btn-add-tunnel">Add</button>
+          </div>
+          <div style="margin-top:15px;text-align:right">
+              <button class="btn-sm" onclick="closeTunnelModal()">Close</button>
+          </div>
+      </div>
+  </div>
+  <div id="dashboard">
+      <h1>Active Sessions</h1>
+      <div id="session-list"></div>
+  </div>
+  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
+  <script src="/static/utils.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

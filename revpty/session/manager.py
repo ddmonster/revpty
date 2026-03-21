@@ -9,6 +9,7 @@ import time
 from enum import Enum
 from typing import Set, Optional
 from dataclasses import dataclass
+from .buffer import OutputRingBuffer
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,7 @@ class SessionConfig:
     shell: str = "/bin/bash"
     idle_timeout: int = 3600  # seconds before auto-cleanup
     enable_log: bool = True
+    output_cache_size: int = 131072  # 128KB output cache for browser replay
 
 
 class Session:
@@ -51,6 +53,9 @@ class Session:
         self.browsers: Set = set()
         self.viewers: Set = set()
         
+        # Output cache for browser replay
+        self.output_buffer = OutputRingBuffer(config.output_cache_size)
+        
         # Metadata
         self.created_at = time.time()
         self.last_active = time.time()
@@ -75,6 +80,11 @@ class Session:
         """Attach a WebSocket to this session"""
         self.last_active = time.time()
         self.attach_count += 1
+        
+        # N8: Clean stale (closed) WebSockets before adding new one
+        self.clients = {c for c in self.clients if not c.closed}
+        self.browsers = {b for b in self.browsers if not b.closed}
+        self.viewers = {v for v in self.viewers if not v.closed}
         
         if role == "client":
             self.clients.add(ws)
@@ -140,6 +150,9 @@ class Session:
             except Exception as e:
                 logger.error(f"[x] Error closing PTY: {e}")
             self.pty = None
+        
+        # Clear output cache
+        self.output_buffer.clear()
         
         logger.info(f"[x] Session '{self.id}' closed (lifespan: {int(time.time() - self.created_at)}s)")
     
