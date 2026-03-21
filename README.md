@@ -1,6 +1,6 @@
 # revpty
 
-Reverse PTY shell over WebSocket.
+Reverse PTY shell over WebSocket with web GUI, file transfer, and HTTP tunneling.
 
 ## Installation
 
@@ -8,7 +8,7 @@ Reverse PTY shell over WebSocket.
 pip install revpty
 ```
 
-## Usage
+## Quick Start
 
 **1. Start server:**
 ```bash
@@ -25,9 +25,73 @@ revpty-client --server ws://your-server:8765 --session my-session
 revpty-attach --server ws://your-server:8765 --session my-session
 ```
 
-## Cloudflare Access Authentication
+**Or use the Web GUI:**
+```
+http://your-server:8765/gui?session=my-session
+```
 
-If your server is protected by Cloudflare Zero Trust with Service Token authentication:
+## CLI Reference
+
+### revpty-server
+
+```bash
+revpty-server --host 0.0.0.0 --port 8765 [--secret YOUR_SECRET] [--cache-size 131072]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--host` | 0.0.0.0 | Listen address |
+| `--port` | 8765 | Listen port |
+| `--secret` | - | Authentication secret |
+| `--cache-size` | 131072 | Output cache size (bytes) |
+| `--install` | - | Install as systemd service |
+| `--user` | - | Install as user-level service |
+
+### revpty-client
+
+```bash
+revpty-client --server ws://server:8765 --session NAME [options]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--server` | Server URL (required) |
+| `--session` | Session name (required) |
+| `--secret` | Authentication secret |
+| `--exec` | Shell to execute (default: /bin/bash) |
+| `--proxy` | HTTP proxy URL |
+| `--cf-client-id` | Cloudflare Access Client ID |
+| `--cf-client-secret` | Cloudflare Access Client Secret |
+| `--install` | Install as systemd service |
+| `--user` | Install as user-level service |
+
+### revpty-attach
+
+```bash
+revpty-attach --server ws://server:8765 --session NAME [options]
+```
+
+Options same as `revpty-client` (except `--exec`).
+
+## Features
+
+### Web GUI
+
+Access the web-based terminal at:
+```
+http://your-server:8765/gui?session=my-session&secret=YOUR_SECRET
+```
+
+Features:
+- Terminal emulator with resize support
+- File browser (upload/download)
+- Multiple shell sessions
+- HTTP tunnel management
+- Share links (read-only or read-write)
+
+### Cloudflare Access Authentication
+
+For servers protected by Cloudflare Zero Trust:
 
 ```bash
 revpty-client --server wss://your-server:8765 --session my-session \
@@ -35,20 +99,89 @@ revpty-client --server wss://your-server:8765 --session my-session \
     --cf-client-secret YOUR_CLIENT_SECRET
 ```
 
-Same for attach:
+### File Transfer
+
+**Via Web GUI:**
+- Browse files in the file panel
+- Upload: click upload button or drag & drop
+- Download: click file name
+- Large files use chunked transfer with CRC32 verification
+
+**Chunked transfer features:**
+- Automatic resume on reconnect
+- Adaptive chunk size based on RTT
+- Progress bar display
+
+### HTTP Tunneling
+
+Forward HTTP requests to services on the client machine:
+
+**Via Web GUI:**
+1. Click "Tunnel" button
+2. Enter local service port (e.g., 8080)
+3. Access via `/tunnel/{tunnel_id}/`
+
+**Via API:**
 ```bash
-revpty-attach --server wss://your-server:8765 --session my-session \
-    --cf-client-id YOUR_CLIENT_ID.access \
-    --cf-client-secret YOUR_CLIENT_SECRET
+# Create tunnel
+curl -X POST http://server:8765/api/tunnels \
+  -H "Content-Type: application/json" \
+  -H "X-Revpty-Secret: YOUR_SECRET" \
+  -d '{"session_id":"my-session","local_port":8080}'
+
+# Response: {"tunnel_id":"a1b2c3d4","url":"/tunnel/a1b2c3d4/"}
+
+# Access tunnel
+curl http://server:8765/tunnel/a1b2c3d4/
 ```
 
-The client will send `CF-Access-Client-Id` and `CF-Access-Client-Secret` headers during WebSocket connection.
+### Multiple Shell Sessions
 
-## Features
+From the Web GUI, click "+" to create additional shell sessions. Each runs independently with its own PTY.
 
-- WebSocket-based PTY relay
-- Session-based routing
-- Reconnect support
-- HTTP proxy support for client
-- Cloudflare Access Service Token authentication
-- Minimal architecture
+### Reconnect & Output Buffer
+
+- **Client-side buffer**: Output during network disconnect is buffered and sent on reconnect
+- **Server-side cache**: Recent output cached for replay when attaching
+- **Auto-reconnect**: Exponential backoff with immediate first retry
+- **Dead connection detection**: 10s heartbeat, reconnect after 2 missed pongs
+
+### Systemd Service
+
+Install as a system service:
+
+```bash
+# Server (as root)
+revpty-server --host 0.0.0.0 --port 8765 --install
+
+# Client (user-level)
+revpty-client --server ws://server:8765 --session my-session --install --user
+```
+
+### HTTP Proxy Support
+
+Client can connect via HTTP proxy:
+
+```bash
+revpty-client --server ws://server:8765 --session my-session --proxy http://proxy:8080
+```
+
+## Architecture
+
+```
+┌─────────────┐     WebSocket      ┌─────────────┐
+│   Server    │◄──────────────────►│   Client    │
+│  (revpty)   │                    │  (target)   │
+└─────────────┘                    └─────────────┘
+       │                                  │
+       │                                  │
+       ▼                                  ▼
+  ┌─────────┐                        ┌─────────┐
+  │Web GUI /│                        │   PTY   │
+  │  Attach │                        │  Shell  │
+  └─────────┘                        └─────────┘
+```
+
+## License
+
+MIT
