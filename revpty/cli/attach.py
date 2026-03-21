@@ -245,12 +245,14 @@ class InteractiveTerminal:
 
 # ---------- Public API ----------
 
-async def attach(server: str, session: str, proxy: str | None = None, secret: str | None = None):
+async def attach(server: str, session: str, proxy: str | None = None, secret: str | None = None,
+                 cf_client_id: str | None = None, cf_client_secret: str | None = None):
     proxy_info = f" via {proxy}" if proxy else ""
     logger.info(f"[*] Connecting to {server}{proxy_info}")
     attach_id = uuid.uuid4().hex[:10]
     attempt = 0
-    retry_delay = 1
+    retry_delay = 0  # immediate first retry
+    last_connected_at = 0
     metrics = {
         "attach_id": attach_id,
         "attempts": 0,
@@ -269,10 +271,16 @@ async def attach(server: str, session: str, proxy: str | None = None, secret: st
                 sock_read=30
             )
             async with aiohttp.ClientSession(timeout=timeout) as http_session:
-                headers = None
+                headers = {}
                 if secret:
-                    headers = {"X-Revpty-Secret": secret}
+                    headers["X-Revpty-Secret"] = secret
+                if cf_client_id and cf_client_secret:
+                    headers["CF-Access-Client-Id"] = cf_client_id
+                    headers["CF-Access-Client-Secret"] = cf_client_secret
+                if not headers:
+                    headers = None
                 async with http_session.ws_connect(server, proxy=proxy, headers=headers, heartbeat=30) as ws:
+                    last_connected_at = time.time()
                     term = InteractiveTerminal(ws, session, attach_id)
                     result = await term.run()
                     if result == "user_detach":
@@ -283,9 +291,18 @@ async def attach(server: str, session: str, proxy: str | None = None, secret: st
         except Exception as e:
             metrics["failures"] += 1
             logger.error(f"[x] Unexpected error: {e}")
-        logger.info(f"[*] Reconnecting in {retry_delay}s...")
-        await asyncio.sleep(retry_delay)
-        retry_delay = min(retry_delay * 2, 30) + random.uniform(0, 0.5)
+        if last_connected_at > 0 and (time.time() - last_connected_at) > 60:
+            retry_delay = 0
+            last_connected_at = 0
+        if retry_delay > 0:
+            logger.info(f"[*] Reconnecting in {retry_delay:.1f}s...")
+            await asyncio.sleep(retry_delay)
+        else:
+            logger.info("[*] Reconnecting immediately...")
+        if retry_delay == 0:
+            retry_delay = 1
+        else:
+            retry_delay = min(retry_delay * 2, 10) + random.uniform(0, retry_delay * 0.3)
 
     logger.info("[*] Attach session ended")
     logger.info(f"[*] attach metrics: {metrics}")

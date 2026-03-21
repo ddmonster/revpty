@@ -42,14 +42,21 @@ def _resolve_executable(name: str) -> str:
     return name
 
 
-def _install_systemd(service_name: str, exec_args: list[str]):
-    if os.geteuid() != 0:
-        raise SystemExit("run as root to install systemd service")
-    
+def _install_systemd(service_name: str, exec_args: list[str], user_mode: bool = False):
     if not shutil.which("systemctl"):
         raise SystemExit("systemctl not found; this command is for systemd-based Linux systems only")
-        
-    unit_path = f"/etc/systemd/system/{service_name}.service"
+
+    if user_mode:
+        unit_dir = os.path.expanduser("~/.config/systemd/user")
+        os.makedirs(unit_dir, exist_ok=True)
+        unit_path = os.path.join(unit_dir, f"{service_name}.service")
+        wanted_by = "default.target"
+    else:
+        if os.geteuid() != 0:
+            raise SystemExit("run as root to install systemd service (or use --user for user-level)")
+        unit_path = f"/etc/systemd/system/{service_name}.service"
+        wanted_by = "multi-user.target"
+
     env_lines = []
     log_level = os.getenv("LOG_LEVEL")
     if log_level:
@@ -67,13 +74,14 @@ def _install_systemd(service_name: str, exec_args: list[str]):
         "RestartSec=1",
         "",
         "[Install]",
-        "WantedBy=multi-user.target",
+        f"WantedBy={wanted_by}",
         "",
     ])
     with open(unit_path, "w") as f:
         f.write(unit)
-    subprocess.run(["systemctl", "daemon-reload"], check=True)
-    subprocess.run(["systemctl", "enable", "--now", service_name], check=True)
+    systemctl = ["systemctl", "--user"] if user_mode else ["systemctl"]
+    subprocess.run([*systemctl, "daemon-reload"], check=True)
+    subprocess.run([*systemctl, "enable", "--now", service_name], check=True)
 
 
 def server():
@@ -82,15 +90,19 @@ def server():
     p.add_argument("--port", type=int, default=8765)
     p.add_argument("--secret", "--seceret", dest="secret", default=None)
     p.add_argument("--install", action="store_true")
+    p.add_argument("--user", action="store_true", help="Install as user-level systemd service")
+    p.add_argument("--cache-size", type=int, default=131072, help="Output cache size in bytes (default: 131072 = 128KB)")
     args = p.parse_args()
     if args.install:
         exe = _resolve_executable("revpty-server")
         cmd = [exe, "--host", args.host, "--port", str(args.port)]
         if args.secret:
             cmd += ["--secret", args.secret]
-        _install_systemd("revpty-server", cmd)
+        if args.cache_size != 131072:
+            cmd += ["--cache-size", str(args.cache_size)]
+        _install_systemd("revpty-server", cmd, user_mode=args.user)
         return
-    run_server(args.host, args.port, secret=args.secret)
+    run_server(args.host, args.port, secret=args.secret, cache_size=args.cache_size)
 
 
 def client():
@@ -99,10 +111,13 @@ def client():
     p.add_argument("--session", required=True, help="Session name")
     p.add_argument("--proxy", default=None, help="HTTP proxy URL")
     p.add_argument("--secret", "--seceret", dest="secret", default=None)
+    p.add_argument("--cf-client-id", dest="cf_client_id", default=None, help="Cloudflare Access Client ID")
+    p.add_argument("--cf-client-secret", dest="cf_client_secret", default=None, help="Cloudflare Access Client Secret")
     p.add_argument("--exec", default=None, help="Command to execute (e.g. /bin/bash)")
     p.add_argument("--install", action="store_true")
+    p.add_argument("--user", action="store_true", help="Install as user-level systemd service")
     args = p.parse_args()
-    
+
     ws_url = convert_to_ws_url(args.server)
     if args.install:
         exe = _resolve_executable("revpty-client")
@@ -111,13 +126,18 @@ def client():
             cmd += ["--proxy", args.proxy]
         if args.secret:
             cmd += ["--secret", args.secret]
+        if args.cf_client_id:
+            cmd += ["--cf-client-id", args.cf_client_id]
+        if args.cf_client_secret:
+            cmd += ["--cf-client-secret", args.cf_client_secret]
         if args.exec:
             cmd += ["--exec", args.exec]
-        _install_systemd("revpty-client", cmd)
+        _install_systemd("revpty-client", cmd, user_mode=args.user)
         return
-    
+
     shell = args.exec or "/bin/bash"
-    asyncio.run(Agent(ws_url, args.session, shell=shell, proxy=args.proxy, secret=args.secret).run())
+    asyncio.run(Agent(ws_url, args.session, shell=shell, proxy=args.proxy, secret=args.secret,
+                      cf_client_id=args.cf_client_id, cf_client_secret=args.cf_client_secret).run())
 
 
 def attach_cmd():
@@ -126,7 +146,10 @@ def attach_cmd():
     p.add_argument("--session", required=True, help="Session name")
     p.add_argument("--proxy", default=None, help="HTTP proxy URL")
     p.add_argument("--secret", "--seceret", dest="secret", default=None)
+    p.add_argument("--cf-client-id", dest="cf_client_id", default=None, help="Cloudflare Access Client ID")
+    p.add_argument("--cf-client-secret", dest="cf_client_secret", default=None, help="Cloudflare Access Client Secret")
     args = p.parse_args()
-    
+
     ws_url = convert_to_ws_url(args.server)
-    asyncio.run(attach(ws_url, args.session, proxy=args.proxy, secret=args.secret))
+    asyncio.run(attach(ws_url, args.session, proxy=args.proxy, secret=args.secret,
+                       cf_client_id=args.cf_client_id, cf_client_secret=args.cf_client_secret))
