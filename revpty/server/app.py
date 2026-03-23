@@ -413,7 +413,17 @@ async def websocket_handler(request):
                         if session:
                             await broadcast_status(session)
                         continue
-                    
+
+                    # Handle PING from client - respond with PONG (before session check)
+                    if frame.type == FrameType.PING.value and frame.role == Role.CLIENT.value:
+                        pong_frame = encode(Frame(
+                            session=frame.session,
+                            role="server",
+                            type=FrameType.PONG.value,
+                        ))
+                        await ws.send_str(pong_frame)
+                        continue
+
                     # Route data frames through session
                     session = session_manager.get(frame.session)
                     if not session:
@@ -453,15 +463,6 @@ async def websocket_handler(request):
                                 await peer.send_str(msg.data)
                     elif frame.type not in (FrameType.PING.value, FrameType.PONG.value):
                         logger.debug(f"[!] No peers for {frame.session} {frame.role} -> {frame.type}")
-
-                    # Respond to PING from client with PONG
-                    if frame.type == FrameType.PING.value and frame.role == Role.CLIENT.value:
-                        pong_frame = encode(Frame(
-                            session=frame.session,
-                            role="server",
-                            type=FrameType.PONG.value,
-                        ))
-                        await ws.send_str(pong_frame)
 
                     # Cache OUTPUT frames from client for browser replay
                     if frame.type == FrameType.OUTPUT.value and frame.role == Role.CLIENT.value:
