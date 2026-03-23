@@ -212,6 +212,18 @@ async def tunnel_proxy_handler(request):
         path += "?" + request.query_string
 
     mapping = tunnel_manager.get_mapping_by_tunnel_id(tunnel_id)
+
+    # If tunnel_id from URL is not valid, check cookie (for /tunnel/something that's not a real tunnel_id)
+    if not mapping and request.cookies.get("tunnel_mode") == "1":
+        cookie_tunnel_id = request.cookies.get("tunnel_id")
+        if cookie_tunnel_id:
+            cookie_mapping = tunnel_manager.get_mapping_by_tunnel_id(cookie_tunnel_id)
+            if cookie_mapping:
+                # Use cookie's tunnel_id and treat URL path as the request path
+                mapping = cookie_mapping
+                tunnel_id = cookie_tunnel_id
+                path = "/tunnel/" + request.match_info["tunnel_id"] + path
+
     if not mapping:
         return web.Response(status=404, text="No tunnel mapping found")
 
