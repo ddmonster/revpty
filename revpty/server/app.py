@@ -89,7 +89,7 @@ async def sessions_api_handler(request):
     """Return active sessions list"""
     required_secret = request.app.get(SECRET_KEY)
     if required_secret:
-        provided = request.headers.get("X-Revpty-Secret") or request.query.get("secret") or request.query.get("seceret")
+        provided = request.headers.get("X-Revpty-Secret") or request.query.get("secret")
         if not provided or not hmac.compare_digest(provided, required_secret):
             return web.json_response({"error": "unauthorized"}, status=401)
             
@@ -115,7 +115,7 @@ async def create_share_handler(request):
     """Create a share link for a session"""
     required_secret = request.app.get(SECRET_KEY)
     if required_secret:
-        provided = request.headers.get("X-Revpty-Secret") or request.query.get("secret") or request.query.get("seceret")
+        provided = request.headers.get("X-Revpty-Secret") or request.query.get("secret")
         if not provided or not hmac.compare_digest(provided, required_secret):
             return web.json_response({"error": "unauthorized"}, status=401)
 
@@ -366,7 +366,7 @@ async def websocket_handler(request):
         return web.Response(text="revpty server", content_type="text/plain")
     required_secret = request.app.get(SECRET_KEY)
     if required_secret:
-        provided = request.headers.get("X-Revpty-Secret") or request.query.get("secret") or request.query.get("seceret")
+        provided = request.headers.get("X-Revpty-Secret") or request.query.get("secret")
         if not provided or not hmac.compare_digest(provided, required_secret):
             return web.Response(status=401, text="unauthorized")
     await ws.prepare(request)
@@ -506,7 +506,7 @@ async def file_websocket_handler(request):
         return web.Response(text="revpty file ws", content_type="text/plain")
     required_secret = request.app.get(SECRET_KEY)
     if required_secret:
-        provided = request.headers.get("X-Revpty-Secret") or request.query.get("secret") or request.query.get("seceret")
+        provided = request.headers.get("X-Revpty-Secret") or request.query.get("secret")
         if not provided or not hmac.compare_digest(provided, required_secret):
             return web.Response(status=401, text="unauthorized")
     await ws.prepare(request)

@@ -1,6 +1,6 @@
 [project]
 name = "revpty"
-version = "0.5.14"
+version = "0.5.15"
 description = "Reverse PTY shell over WebSocket"
 authors = [{name = "ddmonster"}]
 readme = "README.md"

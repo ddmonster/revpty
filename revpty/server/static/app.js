@@ -23,7 +23,7 @@ if (qs.has("ws")) {
   qs.delete("ws")
   history.replaceState(null, '', location.pathname + '?' + qs.toString())
 }
-const secretParam = qs.get("secret") || qs.get("seceret")
+const secretParam = qs.get("secret")
 let currentSession = qs.get("session") || ""
 
 let ws = null
