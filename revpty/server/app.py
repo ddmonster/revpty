@@ -287,18 +287,7 @@ async def unified_handler(request):
     """
     path = request.match_info.get("path", "")
 
-    # 1. Check for tunnel_id from header or cookie
-    tunnel_id = get_tunnel_id(request)
-    if tunnel_id:
-        mapping = tunnel_manager.get_mapping_by_tunnel_id(tunnel_id)
-        if mapping:
-            return await proxy_tunnel_request(request, tunnel_id, "/" + path)
-        # If header was set but invalid, return 404
-        if request.headers.get("X-Tunnel-Id"):
-            return web.Response(status=404, text="Tunnel not found")
-        # Cookie tunnel_id not found, continue to check URL path
-
-    # 2. Check if first path segment is a valid tunnel_id
+    # 1. Check if first path segment is a valid tunnel_id (highest priority)
     parts = path.split("/", 1)
     first_part = parts[0]
 
@@ -307,6 +296,21 @@ async def unified_handler(request):
         if mapping:
             remaining = "/" + parts[1] if len(parts) > 1 else "/"
             return await proxy_tunnel_request(request, first_part, remaining)
+
+    # 2. Check header X-Tunnel-Id
+    tunnel_id = request.headers.get("X-Tunnel-Id")
+    if tunnel_id:
+        mapping = tunnel_manager.get_mapping_by_tunnel_id(tunnel_id)
+        if mapping:
+            return await proxy_tunnel_request(request, tunnel_id, "/" + path)
+        return web.Response(status=404, text="Tunnel not found")
+
+    # 3. Check cookie tunnel_id
+    tunnel_id = request.cookies.get("tunnel_id")
+    if tunnel_id:
+        mapping = tunnel_manager.get_mapping_by_tunnel_id(tunnel_id)
+        if mapping:
+            return await proxy_tunnel_request(request, tunnel_id, "/" + path)
 
     return web.Response(status=404, text="Not found")
 
