@@ -49,6 +49,28 @@ share_store: dict[str, ShareRecord] = {}
 # Tunnel manager
 tunnel_manager = TunnelManager()
 
+
+def is_valid_tunnel_id(s: str) -> bool:
+    """Check if string looks like a tunnel_id (8-char hex)"""
+    if len(s) != 8:
+        return False
+    try:
+        int(s, 16)
+        return True
+    except ValueError:
+        return False
+
+
+def get_tunnel_id(request) -> str | None:
+    """Get tunnel_id from header or cookie (priority order)."""
+    # 1. Check header
+    tunnel_id = request.headers.get("X-Tunnel-Id")
+    if tunnel_id:
+        return tunnel_id
+
+    # 2. Check cookie
+    return request.cookies.get("tunnel_id")
+
 async def print_status():
     """Periodically print active sessions"""
     while True:
@@ -129,7 +151,7 @@ async def create_share_handler(request):
         created_at=time.time(),
     )
 
-    url = f"/share/{share_id}"
+    url = f"/revpty/share/{share_id}"
     return web.json_response({"id": share_id, "url": url})
 
 
@@ -151,7 +173,7 @@ async def resolve_share_handler(request):
     if record.mode == "ro":
         params += "&mode=ro"
 
-    raise web.HTTPFound(f"/gui?{params}")
+    raise web.HTTPFound(f"/revpty/gui?{params}")
 
 
 async def tunnel_api_handler(request):
@@ -168,7 +190,7 @@ async def tunnel_api_handler(request):
         return web.json_response([
             {"id": m.id, "tunnel_id": m.tunnel_id, "session_id": m.session_id,
              "local_host": m.local_host, "local_port": m.local_port,
-             "url": f"/tunnel/{m.tunnel_id}"}
+             "url": f"/{m.tunnel_id}"}
             for m in mappings
         ])
 
@@ -188,7 +210,7 @@ async def tunnel_api_handler(request):
         mapping = tunnel_manager.add_mapping(session_id, local_port, local_host)
         return web.json_response({"id": mapping.id, "tunnel_id": mapping.tunnel_id,
                                    "local_host": mapping.local_host, "local_port": mapping.local_port,
-                                   "url": f"/tunnel/{mapping.tunnel_id}"})
+                                   "url": f"/{mapping.tunnel_id}"})
 
 
 async def tunnel_delete_handler(request):
@@ -204,28 +226,11 @@ async def tunnel_delete_handler(request):
     return web.json_response({"ok": True})
 
 
-async def tunnel_proxy_handler(request):
-    """Proxy HTTP request through tunnel to client."""
-    tunnel_id = request.match_info["tunnel_id"]
-    path = "/" + request.match_info.get("path", "")
-    if request.query_string:
-        path += "?" + request.query_string
-
+async def proxy_tunnel_request(request, tunnel_id: str, path: str):
+    """Common proxy logic for tunnel requests."""
     mapping = tunnel_manager.get_mapping_by_tunnel_id(tunnel_id)
-
-    # If tunnel_id from URL is not valid, check cookie (for /tunnel/something that's not a real tunnel_id)
-    if not mapping and request.cookies.get("tunnel_mode") == "1":
-        cookie_tunnel_id = request.cookies.get("tunnel_id")
-        if cookie_tunnel_id:
-            cookie_mapping = tunnel_manager.get_mapping_by_tunnel_id(cookie_tunnel_id)
-            if cookie_mapping:
-                # Use cookie's tunnel_id and treat URL path as the request path
-                mapping = cookie_mapping
-                tunnel_id = cookie_tunnel_id
-                path = "/tunnel/" + request.match_info["tunnel_id"] + path
-
     if not mapping:
-        return web.Response(status=404, text="No tunnel mapping found")
+        return web.Response(status=404, text="Tunnel not found")
 
     session = session_manager.get(mapping.session_id) if session_manager else None
     if not session or not session.clients:
@@ -234,6 +239,9 @@ async def tunnel_proxy_handler(request):
     request_id = uuid.uuid4().hex[:12]
     body = await request.read()
     headers = dict(request.headers)
+
+    if request.query_string:
+        path += "?" + request.query_string
 
     result = await tunnel_manager.proxy_request(
         session, request_id, request.method, path, headers, body, mapping
@@ -261,7 +269,6 @@ async def tunnel_proxy_handler(request):
 
     # Set cookies to enable tunnel mode for subsequent requests
     response.set_cookie("tunnel_id", tunnel_id, path="/", max_age=3600)
-    response.set_cookie("tunnel_mode", "1", path="/", max_age=3600)
 
     return response
 
@@ -270,61 +277,38 @@ async def tunnel_clear_handler(request):
     """Clear tunnel cookies to exit tunnel mode."""
     response = web.json_response({"ok": True})
     response.del_cookie("tunnel_id", path="/")
-    response.del_cookie("tunnel_mode", path="/")
     return response
 
 
-async def tunnel_catchall_handler(request):
+async def unified_handler(request):
     """
-    Catch-all handler for requests without tunnel_id in path.
-    Uses cookies (tunnel_mode + tunnel_id) to determine which tunnel to use.
+    Unified catch-all handler for tunnel requests.
+    Resolves tunnel_id from URL path, header, or cookie (priority order).
     """
-    # Only handle if tunnel_mode cookie is set
-    if request.cookies.get("tunnel_mode") != "1":
-        return web.Response(status=404, text="Not found")
+    path = request.match_info.get("path", "")
 
-    tunnel_id = request.cookies.get("tunnel_id")
-    if not tunnel_id:
-        return web.Response(status=404, text="No tunnel mapping found (no tunnel cookie)")
+    # 1. Check for tunnel_id from header or cookie
+    tunnel_id = get_tunnel_id(request)
+    if tunnel_id:
+        mapping = tunnel_manager.get_mapping_by_tunnel_id(tunnel_id)
+        if mapping:
+            return await proxy_tunnel_request(request, tunnel_id, "/" + path)
+        # If header was set but invalid, return 404
+        if request.headers.get("X-Tunnel-Id"):
+            return web.Response(status=404, text="Tunnel not found")
+        # Cookie tunnel_id not found, continue to check URL path
 
-    mapping = tunnel_manager.get_mapping_by_tunnel_id(tunnel_id)
-    if not mapping:
-        return web.Response(status=404, text="No tunnel mapping found")
+    # 2. Check if first path segment is a valid tunnel_id
+    parts = path.split("/", 1)
+    first_part = parts[0]
 
-    session = session_manager.get(mapping.session_id) if session_manager else None
-    if not session or not session.clients:
-        return web.Response(status=502, text="No connected client")
+    if first_part and is_valid_tunnel_id(first_part):
+        mapping = tunnel_manager.get_mapping_by_tunnel_id(first_part)
+        if mapping:
+            remaining = "/" + parts[1] if len(parts) > 1 else "/"
+            return await proxy_tunnel_request(request, first_part, remaining)
 
-    # Reconstruct full path including query string
-    path = request.path
-    if request.query_string:
-        path += "?" + request.query_string
-
-    request_id = uuid.uuid4().hex[:12]
-    body = await request.read()
-    headers = dict(request.headers)
-
-    result = await tunnel_manager.proxy_request(
-        session, request_id, request.method, path, headers, body, mapping
-    )
-
-    status = result.get("status", 502)
-    resp_headers = result.get("headers", {})
-    resp_body = result.get("body", b"")
-
-    if isinstance(resp_body, str):
-        resp_body = resp_body.encode()
-
-    if "body_b64" in result and result["body_b64"]:
-        try:
-            resp_body = bytes.fromhex(result["body_b64"])
-        except ValueError:
-            pass
-
-    skip_headers = {"transfer-encoding", "connection", "content-encoding"}
-    filtered = {k: v for k, v in resp_headers.items() if k.lower() not in skip_headers}
-
-    return web.Response(status=status, headers=filtered, body=resp_body)
+    return web.Response(status=404, text="Not found")
 
 
 async def broadcast_status(session):
@@ -643,21 +627,21 @@ def run(host="0.0.0.0", port=8765, secret=None, cache_size=131072):
     app["cache_size"] = cache_size
     app.on_startup.append(on_startup)
     app.on_cleanup.append(on_cleanup)
-    app.router.add_get('/', websocket_handler)
-    app.router.add_get('/ws', websocket_handler)
-    app.router.add_get('/gui', gui_handler)
-    app.router.add_get('/ws/file', file_websocket_handler)
-    app.router.add_get('/api/sessions', sessions_api_handler)
-    app.router.add_post('/api/shares', create_share_handler)
-    app.router.add_get('/share/{share_id}', resolve_share_handler)
-    # Tunnel API
-    app.router.add_route('*', '/api/tunnels', tunnel_api_handler)
-    app.router.add_delete('/api/tunnels/{tunnel_id}', tunnel_delete_handler)
-    app.router.add_route('*', '/tunnel/{tunnel_id}/{path:.*}', tunnel_proxy_handler)
-    app.router.add_route('*', '/tunnel/{tunnel_id}', tunnel_proxy_handler)
-    app.router.add_get('/tunnel/clear', tunnel_clear_handler)  # Exit tunnel mode
-    app.router.add_static('/static', STATIC_DIR)
-    # Catch-all for tunnel mode (must be last)
-    app.router.add_route('*', '/{path:.*}', tunnel_catchall_handler)
+    # Routes with /revpty prefix
+    app.router.add_get('/revpty/ws', websocket_handler)
+    app.router.add_get('/revpty/gui', gui_handler)
+    app.router.add_get('/revpty/ws/file', file_websocket_handler)
+    app.router.add_get('/revpty/api/sessions', sessions_api_handler)
+    app.router.add_post('/revpty/api/shares', create_share_handler)
+    app.router.add_get('/revpty/share/{share_id}', resolve_share_handler)
+    app.router.add_route('*', '/revpty/api/tunnels', tunnel_api_handler)
+    app.router.add_delete('/revpty/api/tunnels/{tunnel_id}', tunnel_delete_handler)
+    app.router.add_static('/revpty/static', STATIC_DIR)
+    # Clear tunnel mode
+    app.router.add_get('/clear-tunnel', tunnel_clear_handler)
+    # Root redirect to GUI
+    app.router.add_get('/', lambda r: web.HTTPFound('/revpty/gui'))
+    # Catch-all for tunnel (must be last)
+    app.router.add_route('*', '/{path:.*}', unified_handler)
     
     web.run_app(app, host=host, port=port, print=lambda s: None)

@@ -11,26 +11,32 @@ from revpty.cli.attach import attach
 
 
 def convert_to_ws_url(url):
-    """Convert http/https URL to ws/wss"""
+    """Convert http/https URL to ws/wss with /revpty/ws path"""
     url = url.strip()
-    
-    # If already ws:// or wss://, return as-is
+
+    # Remove trailing slash
+    url = url.rstrip('/')
+
+    # If already ws:// or wss:// with path, return as-is
     if url.startswith('ws://') or url.startswith('wss://'):
+        # Add /revpty/ws if no path
+        if '/' not in url[5:]:
+            return url + '/revpty/ws'
         return url
-    
+
     # Convert http:// to ws://
     if url.startswith('http://'):
-        return url.replace('http://', 'ws://', 1)
-    
+        return url.replace('http://', 'ws://', 1) + '/revpty/ws'
+
     # Convert https:// to wss://
     if url.startswith('https://'):
-        return url.replace('https://', 'wss://', 1)
-    
+        return url.replace('https://', 'wss://', 1) + '/revpty/ws'
+
     # Default to ws:// if no scheme specified
     if not url.startswith(('http://', 'https://', 'ws://', 'wss://')):
-        return f'ws://{url}'
-    
-    return url
+        return f'ws://{url}/revpty/ws'
+
+    return url + '/revpty/ws'
 
 
 def _resolve_executable(name: str) -> str:

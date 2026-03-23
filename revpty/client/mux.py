@@ -114,6 +114,18 @@ class ConnectionMux:
             self._session_roles[session_id] = role
             self._offline_buffers[session_id] = bytearray()
             logger.info(f"[mux] Registered session '{session_id}'")
+            # Send ATTACH immediately if already connected
+            if self._connected and self._ws and not self._ws.closed:
+                try:
+                    attach_frame = encode(Frame(
+                        session=session_id,
+                        role=role,
+                        type="attach",
+                    ))
+                    asyncio.create_task(self._ws.send_str(attach_frame))
+                    logger.info(f"[mux] Attached session '{session_id}'")
+                except Exception as e:
+                    logger.error(f"[mux] Failed to attach '{session_id}': {e}")
         return self._sessions[session_id]
 
     def unregister(self, session_id: str):

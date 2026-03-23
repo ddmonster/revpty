@@ -213,7 +213,7 @@ function connectFileWs() {
     return
   }
   const target = location.protocol === "https:" ? "wss://" : "ws://"
-  const url = target + location.host + "/ws/file" + (secretParam ? "?secret=" + encodeURIComponent(secretParam) : "")
+  const url = target + location.host + "/revpty/ws/file" + (secretParam ? "?secret=" + encodeURIComponent(secretParam) : "")
   wsFile = new WebSocket(url)
   wsFile.onopen = () => {
     const session = currentSession.trim()
@@ -443,7 +443,7 @@ function showTerminal() {
 
 async function loadSessions() {
     try {
-        const url = "/api/sessions" + (secretParam ? "?secret=" + encodeURIComponent(secretParam) : "")
+        const url = "/revpty/api/sessions" + (secretParam ? "?secret=" + encodeURIComponent(secretParam) : "")
         const res = await fetch(url)
         if (!res.ok) throw new Error("Failed to load sessions")
         const sessions = await res.json()
@@ -490,7 +490,7 @@ async function loadSessions() {
 
 function wsUrl() {
   const scheme = location.protocol === "https:" ? "wss://" : "ws://"
-  return scheme + location.host + "/ws"
+  return scheme + location.host + "/revpty/ws"
 }
 
 function withSecret(url) {
@@ -786,7 +786,7 @@ btnGenShare.addEventListener("click", async () => {
   const session = currentSession.trim()
   if (!session) return
   try {
-    const url = "/api/shares" + (secretParam ? "?secret=" + encodeURIComponent(secretParam) : "")
+    const url = "/revpty/api/shares" + (secretParam ? "?secret=" + encodeURIComponent(secretParam) : "")
     const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -841,7 +841,7 @@ async function loadTunnels() {
   const session = currentSession.trim()
   if (!session) return
   try {
-    let url = "/api/tunnels?session=" + encodeURIComponent(session)
+    let url = "/revpty/api/tunnels?session=" + encodeURIComponent(session)
     if (secretParam) url += "&secret=" + encodeURIComponent(secretParam)
     const res = await fetch(url)
     if (!res.ok) throw new Error("Failed to load tunnels")
@@ -861,9 +861,9 @@ function renderTunnelList(tunnels) {
   tunnels.forEach(t => {
     const div = document.createElement("div")
     div.className = "tunnel-item"
-    const tunnelUrl = location.origin + '/tunnel/' + t.tunnel_id
+    const tunnelUrl = location.origin + '/' + t.tunnel_id
     div.innerHTML = '<div class="tunnel-info">' +
-      '<a class="tunnel-link" href="' + tunnelUrl + '" target="_blank">/tunnel/' + t.tunnel_id + '</a>' +
+      '<a class="tunnel-link" href="' + tunnelUrl + '" target="_blank">/' + t.tunnel_id + '</a>' +
       '<span class="tunnel-arrow">&rarr;</span>' +
       '<span class="tunnel-target">' + t.local_host + ':' + t.local_port + '</span>' +
       '</div>'
@@ -883,7 +883,7 @@ btnAddTunnel.addEventListener("click", async () => {
   const localPort = parseInt(tunnelLocalPort.value)
   if (!localPort) { alert("Service port is required"); return }
   try {
-    let url = "/api/tunnels"
+    let url = "/revpty/api/tunnels"
     if (secretParam) url += "?secret=" + encodeURIComponent(secretParam)
     const res = await fetch(url, {
       method: "POST",
@@ -901,7 +901,7 @@ btnAddTunnel.addEventListener("click", async () => {
 
 async function deleteTunnel(tunnelId) {
   try {
-    let url = "/api/tunnels/" + tunnelId
+    let url = "/revpty/api/tunnels/" + tunnelId
     if (secretParam) url += "?secret=" + encodeURIComponent(secretParam)
     const res = await fetch(url, { method: "DELETE" })
     if (!res.ok) throw new Error("Delete failed")
