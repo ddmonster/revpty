@@ -65,12 +65,14 @@ class ConnectionMux:
     """
 
     def __init__(self, server: str, proxy: str = None, secret: str = None,
-                 cf_client_id: str = None, cf_client_secret: str = None):
+                 cf_client_id: str = None, cf_client_secret: str = None,
+                 insecure: bool = False):
         self.server = server
         self.proxy = proxy
         self.secret = secret
         self.cf_client_id = cf_client_id
         self.cf_client_secret = cf_client_secret
+        self.insecure = insecure
 
         # Connection state
         self._ws = None
@@ -211,6 +213,7 @@ class ConnectionMux:
                         headers=headers,
                         heartbeat=30,  # aiohttp-level safety net
                         compress=15,   # N1: per-message deflate
+                        ssl=False if self.insecure else None,
                     ) as ws:
                         self._ws = ws
                         self._connected = True

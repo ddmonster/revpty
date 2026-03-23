@@ -246,7 +246,8 @@ class InteractiveTerminal:
 # ---------- Public API ----------
 
 async def attach(server: str, session: str, proxy: str | None = None, secret: str | None = None,
-                 cf_client_id: str | None = None, cf_client_secret: str | None = None):
+                 cf_client_id: str | None = None, cf_client_secret: str | None = None,
+                 insecure: bool = False):
     proxy_info = f" via {proxy}" if proxy else ""
     logger.info(f"[*] Connecting to {server}{proxy_info}")
     attach_id = uuid.uuid4().hex[:10]
@@ -279,7 +280,8 @@ async def attach(server: str, session: str, proxy: str | None = None, secret: st
                     headers["CF-Access-Client-Secret"] = cf_client_secret
                 if not headers:
                     headers = None
-                async with http_session.ws_connect(server, proxy=proxy, headers=headers, heartbeat=30) as ws:
+                async with http_session.ws_connect(server, proxy=proxy, headers=headers, heartbeat=30,
+                                                   ssl=False if insecure else None) as ws:
                     last_connected_at = time.time()
                     term = InteractiveTerminal(ws, session, attach_id)
                     result = await term.run()

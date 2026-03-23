@@ -485,7 +485,34 @@ async def websocket_handler(request):
                             control_payload.get("request_id", ""),
                             control_payload
                         )
-                    
+
+                    # Handle tunnel registration from client (auto-reconnect)
+                    if (
+                        control_payload
+                        and frame.role == Role.CLIENT.value
+                        and control_payload.get("op") == "tunnel_register"
+                    ):
+                        local_port = control_payload.get("local_port")
+                        local_host = control_payload.get("local_host", "127.0.0.1")
+                        if local_port:
+                            mapping = tunnel_manager.add_mapping(
+                                frame.session, local_port, local_host
+                            )
+                            # Send ack back to client
+                            ack_frame = encode(Frame(
+                                session=frame.session,
+                                role="server",
+                                type=FrameType.CONTROL.value,
+                                data=json.dumps({
+                                    "op": "tunnel_register_ack",
+                                    "tunnel_id": mapping.tunnel_id,
+                                    "local_port": local_port,
+                                    "ok": True
+                                }).encode()
+                            ))
+                            await ws.send_str(ack_frame)
+                            logger.info(f"[tunnel] Client registered tunnel {mapping.tunnel_id} -> {local_host}:{local_port}")
+
                 except ProtocolError as e:
                     logger.error(f"[x] Protocol error: {e}")
                     continue

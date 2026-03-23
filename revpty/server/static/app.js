@@ -36,6 +36,8 @@ let promptTimer = null
 let shells = new Map()
 let shellBuffers = new Map()
 let activeShell = null
+let waitingForOutput = false
+let pendingInput = ""  // For local echo matching
 
 function setStatus(text) { statusEl.textContent = text }
 function setLed(el, state) {
@@ -516,7 +518,8 @@ function setupSessionView(session) {
   fitAddon.fit()
   // Don't replay shellBuffers here - server will send output_buffer replay on ATTACH
   receivedOutput = false
-  localEcho = false
+  localEcho = true  // Enable local echo for better responsiveness
+  pendingInput = ""
   const isReadOnly = document.body.classList.contains('readonly-mode')
   term.options.disableStdin = isReadOnly
   return { isReadOnly }
@@ -582,15 +585,29 @@ function connect() {
     const frame = JSON.parse(evt.data)
     if (frame.type === "output" && frame.data) {
       receivedOutput = true
-      localEcho = false
-      const chunk = decodeData(frame.data)
-      term.write(chunk)
-      // Suppress terminal query responses generated asynchronously by xterm.js
-      suppressInputUntil = Date.now() + 150
-      if (frame.session) {
-        const prev = shellBuffers.get(frame.session) || ""
-        const updated = prev + chunk
-        shellBuffers.set(frame.session, updated.length > 131072 ? updated.slice(-131072) : updated)
+      localEcho = true  // Re-enable local echo after receiving output
+      // Hide waiting indicator
+      if (waitingForOutput) {
+        waitingForOutput = false
+        setStatus("attached")
+      }
+      let chunk = decodeData(frame.data)
+
+      // Local echo matching: skip echoed input to avoid double display
+      if (pendingInput && chunk.startsWith(pendingInput)) {
+        chunk = chunk.slice(pendingInput.length)
+        pendingInput = ""
+      }
+
+      if (chunk) {
+        term.write(chunk)
+        // Suppress terminal query responses generated asynchronously by xterm.js
+        suppressInputUntil = Date.now() + 150
+        if (frame.session) {
+          const prev = shellBuffers.get(frame.session) || ""
+          const updated = prev + chunk
+          shellBuffers.set(frame.session, updated.length > 131072 ? updated.slice(-131072) : updated)
+        }
       }
     } else if (frame.type === "ping") {
       ws.send(encodeFrame({ session: frame.session, role: getRole(), type: "pong" }))
@@ -667,7 +684,8 @@ term.onData(data => {
   if (!ws || ws.readyState !== WebSocket.OPEN || !session) return
   // Read-only check
   if (document.body.classList.contains('readonly-mode')) return
-  
+
+  // Local echo: immediately display input
   if (localEcho) {
     term.write(data)
     if (session) {
@@ -675,7 +693,17 @@ term.onData(data => {
       const updated = prev + data
       shellBuffers.set(session, updated.length > 131072 ? updated.slice(-131072) : updated)
     }
+    // Track pending input for echo matching
+    pendingInput += data
+    if (pendingInput.length > 256) pendingInput = pendingInput.slice(-256)
   }
+
+  // Show waiting indicator on Enter
+  if (data === '\r' || data === '\n') {
+    waitingForOutput = true
+    setStatus("⏳ running...")
+  }
+
   ws.send(encodeFrame({ session, role: getRole(), type: "input", data }))
 })
 

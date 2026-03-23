@@ -181,7 +181,7 @@ class Agent:
     """Main agent that uses ConnectionMux for all WS communication."""
 
     def __init__(self, server, session, shell="/bin/bash", proxy=None, secret=None,
-                 cf_client_id=None, cf_client_secret=None, pty_factory=PTYShell):
+                 cf_client_id=None, cf_client_secret=None, insecure=False, tunnels=None, pty_factory=PTYShell):
         self.server = server
         self.session = session
         self.shell = shell
@@ -189,6 +189,8 @@ class Agent:
         self.secret = secret
         self.cf_client_id = cf_client_id
         self.cf_client_secret = cf_client_secret
+        self.insecure = insecure
+        self.tunnels = tunnels or []  # List of tunnel specs: "port" or "host:port"
         self.running = True
         self.pty_factory = pty_factory
         self.file_manager = FileManager()
@@ -198,11 +200,70 @@ class Agent:
         self.shell_instance = None
         self.shell_workers: dict[str, ShellWorker] = {}
         self.shell_worker_tasks: dict[str, asyncio.Task] = {}
+        self._registered_tunnels: dict[str, dict] = {}  # tunnel_id -> {local_host, local_port}
 
         # ConnectionMux handles all WS communication
         self.mux = ConnectionMux(server, proxy=proxy, secret=secret,
-                                  cf_client_id=cf_client_id, cf_client_secret=cf_client_secret)
+                                  cf_client_id=cf_client_id, cf_client_secret=cf_client_secret,
+                                  insecure=insecure)
         self._queue: asyncio.Queue = None
+
+    def _parse_tunnel_spec(self, spec: str) -> tuple[str, int]:
+        """Parse tunnel spec like '8080' or '127.0.0.1:8080' into (host, port)."""
+        if ':' in spec:
+            host, port = spec.rsplit(':', 1)
+            return host, int(port)
+        return "127.0.0.1", int(spec)
+
+    async def _register_tunnels(self):
+        """Register all tunnels with the server."""
+        for spec in self.tunnels:
+            try:
+                local_host, local_port = self._parse_tunnel_spec(spec)
+                frame = encode(Frame(
+                    session=self.session,
+                    role="client",
+                    type=FrameType.CONTROL.value,
+                    data=json.dumps({
+                        "op": "tunnel_register",
+                        "local_host": local_host,
+                        "local_port": local_port
+                    }).encode()
+                ))
+                await self.mux.send(frame, FrameType.CONTROL.value)
+                logger.info(f"[tunnel] Registering tunnel -> {local_host}:{local_port}")
+            except Exception as e:
+                logger.error(f"[tunnel] Failed to register tunnel {spec}: {e}")
+
+    async def _tunnel_registration_loop(self):
+        """Periodically check and register tunnels when connected."""
+        registered = set()
+        while not self._stop_event.is_set():
+            if self.mux.connected:
+                # Register tunnels that haven't been registered yet
+                for spec in self.tunnels:
+                    if spec not in registered:
+                        try:
+                            local_host, local_port = self._parse_tunnel_spec(spec)
+                            frame = encode(Frame(
+                                session=self.session,
+                                role="client",
+                                type=FrameType.CONTROL.value,
+                                data=json.dumps({
+                                    "op": "tunnel_register",
+                                    "local_host": local_host,
+                                    "local_port": local_port
+                                }).encode()
+                            ))
+                            await self.mux.send(frame, FrameType.CONTROL.value)
+                            logger.info(f"[tunnel] Registered -> {local_host}:{local_port}")
+                            registered.add(spec)
+                        except Exception as e:
+                            logger.error(f"[tunnel] Failed to register {spec}: {e}")
+            else:
+                # Clear registered set on disconnect so we re-register on reconnect
+                registered.clear()
+            await asyncio.sleep(2)
 
     async def _ensure_shell(self):
         if self._stop_event.is_set():
@@ -227,6 +288,19 @@ class Agent:
         except Exception:
             return
         op = payload.get("op")
+        if op == "tunnel_register_ack":
+            # Server acknowledged tunnel registration
+            tunnel_id = payload.get("tunnel_id")
+            local_port = payload.get("local_port")
+            if payload.get("ok"):
+                logger.info(f"[tunnel] Registered tunnel_id={tunnel_id} for port {local_port}")
+                self._registered_tunnels[tunnel_id] = {
+                    "local_host": "127.0.0.1",
+                    "local_port": local_port
+                }
+            else:
+                logger.error(f"[tunnel] Registration failed for port {local_port}")
+            return
         if op == "tunnel_request":
             # Phase 7: forward tunnel request to local service
             asyncio.create_task(self._handle_tunnel_request(payload))
@@ -392,13 +466,16 @@ class Agent:
             self._queue = self.mux.register(self.session)
             await self.mux.start()
 
+            # Start tunnel registration task (waits for connection then registers)
+            tunnel_task = asyncio.create_task(self._tunnel_registration_loop())
+
             # Start PTY I/O tasks
             ws_to_pty_task = asyncio.create_task(self._ws_to_pty())
             pty_to_ws_task = asyncio.create_task(self._pty_to_ws())
             stop_task = asyncio.create_task(self._stop_event.wait())
 
             done, pending = await asyncio.wait(
-                [ws_to_pty_task, pty_to_ws_task, stop_task],
+                [ws_to_pty_task, pty_to_ws_task, stop_task, tunnel_task],
                 return_when=asyncio.FIRST_COMPLETED,
             )
 
