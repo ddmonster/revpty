@@ -245,6 +245,73 @@ async def tunnel_proxy_handler(request):
     skip_headers = {"transfer-encoding", "connection", "content-encoding"}
     filtered = {k: v for k, v in resp_headers.items() if k.lower() not in skip_headers}
 
+    response = web.Response(status=status, headers=filtered, body=resp_body)
+
+    # Set cookies to enable tunnel mode for subsequent requests
+    response.set_cookie("tunnel_id", tunnel_id, path="/", max_age=3600)
+    response.set_cookie("tunnel_mode", "1", path="/", max_age=3600)
+
+    return response
+
+
+async def tunnel_clear_handler(request):
+    """Clear tunnel cookies to exit tunnel mode."""
+    response = web.json_response({"ok": True})
+    response.del_cookie("tunnel_id", path="/")
+    response.del_cookie("tunnel_mode", path="/")
+    return response
+
+
+async def tunnel_catchall_handler(request):
+    """
+    Catch-all handler for requests without tunnel_id in path.
+    Uses cookies (tunnel_mode + tunnel_id) to determine which tunnel to use.
+    """
+    # Only handle if tunnel_mode cookie is set
+    if request.cookies.get("tunnel_mode") != "1":
+        return web.Response(status=404, text="Not found")
+
+    tunnel_id = request.cookies.get("tunnel_id")
+    if not tunnel_id:
+        return web.Response(status=404, text="No tunnel mapping found (no tunnel cookie)")
+
+    mapping = tunnel_manager.get_mapping_by_tunnel_id(tunnel_id)
+    if not mapping:
+        return web.Response(status=404, text="No tunnel mapping found")
+
+    session = session_manager.get(mapping.session_id) if session_manager else None
+    if not session or not session.clients:
+        return web.Response(status=502, text="No connected client")
+
+    # Reconstruct full path including query string
+    path = request.path
+    if request.query_string:
+        path += "?" + request.query_string
+
+    request_id = uuid.uuid4().hex[:12]
+    body = await request.read()
+    headers = dict(request.headers)
+
+    result = await tunnel_manager.proxy_request(
+        session, request_id, request.method, path, headers, body, mapping
+    )
+
+    status = result.get("status", 502)
+    resp_headers = result.get("headers", {})
+    resp_body = result.get("body", b"")
+
+    if isinstance(resp_body, str):
+        resp_body = resp_body.encode()
+
+    if "body_b64" in result and result["body_b64"]:
+        try:
+            resp_body = bytes.fromhex(result["body_b64"])
+        except ValueError:
+            pass
+
+    skip_headers = {"transfer-encoding", "connection", "content-encoding"}
+    filtered = {k: v for k, v in resp_headers.items() if k.lower() not in skip_headers}
+
     return web.Response(status=status, headers=filtered, body=resp_body)
 
 
@@ -576,6 +643,9 @@ def run(host="0.0.0.0", port=8765, secret=None, cache_size=131072):
     app.router.add_delete('/api/tunnels/{tunnel_id}', tunnel_delete_handler)
     app.router.add_route('*', '/tunnel/{tunnel_id}/{path:.*}', tunnel_proxy_handler)
     app.router.add_route('*', '/tunnel/{tunnel_id}', tunnel_proxy_handler)
+    app.router.add_get('/tunnel/clear', tunnel_clear_handler)  # Exit tunnel mode
     app.router.add_static('/static', STATIC_DIR)
+    # Catch-all for tunnel mode (must be last)
+    app.router.add_route('*', '/{path:.*}', tunnel_catchall_handler)
     
     web.run_app(app, host=host, port=port, print=lambda s: None)
