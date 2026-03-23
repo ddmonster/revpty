@@ -1,3 +1,3 @@
 """revpty: Programmable Shell Runtime over WebSocket"""
 
-__version__ = "0.5.7"
+__version__ = "0.5.8"
