@@ -4,7 +4,7 @@ version = "0.5.21"
 description = "Reverse PTY shell over WebSocket"
 authors = [{name = "ddmonster"}]
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dependencies = ["aiohttp"]
 
 [project.scripts]
