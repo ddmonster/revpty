@@ -2,12 +2,9 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Build & Test Commands
+## Test Commands
 
 ```bash
-# Build package
-bash build.sh --version X.Y.Z
-
 # Run all tests
 python -m pytest tests/ -v
 
@@ -23,22 +20,14 @@ python3 -m py_compile revpty/cli/main.py revpty/client/agent.py
 
 ## Release Process
 
+Push a version tag to trigger the CI workflow (`.github/workflows/release.yml`):
+
 ```bash
-# 1. Build
-bash build.sh --version X.Y.Z
-
-# 2. Commit & push
-git add -A && git commit -m "chore: bump version to X.Y.Z"
-git push
-
-# 3. Create GitHub release
-gh release create vX.Y.Z dist/revpty-X.Y.Z-py3-none-any.whl dist/revpty-X.Y.Z.tar.gz \
-  --title "vX.Y.Z" --notes "Release notes here"
-
-# 4. Publish to PyPI
-twine upload dist/revpty-X.Y.Z.tar.gz dist/revpty-X.Y.Z-py3-none-any.whl \
-  --username __token__ --password $TWINE_PASSWORD
+git tag v0.5.22
+git push origin v0.5.22
 ```
+
+The workflow runs tests, bumps the version in `pyproject.toml` and `revpty/__init__.py`, builds sdist + wheel, publishes to PyPI, and creates a GitHub release. Requires `TWINE_PASSWORD` secret in repo settings.
 
 ## Architecture Overview
 

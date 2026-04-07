@@ -1,0 +1,73 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+*'
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.9', '3.10', '3.11', '3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install pytest && python -m pytest tests/ -v
+
+  release:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Bump version
+        run: |
+          python - "$VERSION" <<'PY'
+          import re, sys
+          from pathlib import Path
+          version = sys.argv[1]
+          for path, pattern in [
+              (Path("pyproject.toml"), r'^(version\s*=\s*")([^"]+)(")\s*$'),
+              (Path("revpty/__init__.py"), r'^(__version__\s*=\s*")([^"]+)(")\s*$'),
+          ]:
+              text = path.read_text(encoding="utf-8")
+              new_text, count = re.subn(pattern, lambda m: f"{m.group(1)}{version}{m.group(3)}", text, flags=re.M)
+              if count != 1:
+                  raise SystemExit(f"Version update failed: {path}")
+              if new_text != text:
+                  path.write_text(new_text, encoding="utf-8")
+          PY
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+
+      - name: Build
+        run: pip install build && python -m build
+
+      - name: Publish to PyPI
+        run: pip install twine && twine upload dist/* --username __token__ --password "$TWINE_PASSWORD"
+        env:
+          TWINE_PASSWORD: ${{ secrets.TWINE_PASSWORD }}
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/*.whl dist/*.tar.gz \
+            --title "$GITHUB_REF_NAME" \
+            --notes "Release $GITHUB_REF_NAME"
