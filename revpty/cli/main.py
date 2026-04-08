@@ -6,7 +6,10 @@ import shutil
 import subprocess
 import sys
 import json
-import tomllib
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib
 from pathlib import Path
 from revpty.server.app import run as run_server
 from revpty.client.agent import Agent

@@ -1,19 +1,28 @@
 import base64
 import json
 import os
+import sys
 import tempfile
 import unittest
 import zlib
 
 from revpty.client.file_manager import FileManager, ChunkedFileTransfer
 
+IS_WINDOWS = sys.platform == "win32"
+
+
+def _temp_path():
+    """Create a temp file path, ensuring the handle is closed (Windows-safe)."""
+    fd, path = tempfile.mkstemp()
+    os.close(fd)
+    return path
+
 
 class ChunkedTransferProtocolTests(unittest.TestCase):
     """Tests for chunked transfer protocol handlers."""
 
     def test_file_chunk_valid_write(self):
-        with tempfile.NamedTemporaryFile(delete=False) as f:
-            path = f.name
+        path = _temp_path()
         try:
             fm = FileManager()
             # Init upload
@@ -35,8 +44,7 @@ class ChunkedTransferProtocolTests(unittest.TestCase):
             os.unlink(path)
 
     def test_file_chunk_crc_mismatch(self):
-        with tempfile.NamedTemporaryFile(delete=False) as f:
-            path = f.name
+        path = _temp_path()
         try:
             fm = FileManager()
             req = json.dumps({"op": "file_init", "path": path, "direction": "upload"}).encode()
@@ -64,10 +72,10 @@ class ChunkedTransferProtocolTests(unittest.TestCase):
         self.assertEqual(resp["op"], "error")
 
     def test_file_chunk_ack_sliding_window(self):
-        with tempfile.NamedTemporaryFile(delete=False) as f:
-            f.write(b"A" * 200)
-            path = f.name
+        path = _temp_path()
         try:
+            with open(path, "wb") as f:
+                f.write(b"A" * 200)
             fm = FileManager()
             req = json.dumps({"op": "file_init", "path": path, "direction": "download", "chunk_size": 50}).encode()
             resp = json.loads(fm.handle_message(req))
@@ -92,10 +100,10 @@ class ChunkedTransferProtocolTests(unittest.TestCase):
         self.assertEqual(resp["op"], "noop")
 
     def test_file_chunk_nack_retransmit(self):
-        with tempfile.NamedTemporaryFile(delete=False) as f:
-            f.write(b"A" * 100)
-            path = f.name
+        path = _temp_path()
         try:
+            with open(path, "wb") as f:
+                f.write(b"A" * 100)
             fm = FileManager()
             req = json.dumps({"op": "file_init", "path": path, "direction": "download", "chunk_size": 50}).encode()
             resp = json.loads(fm.handle_message(req))
@@ -116,8 +124,7 @@ class ChunkedTransferProtocolTests(unittest.TestCase):
         self.assertEqual(resp["op"], "noop")
 
     def test_file_complete_cleanup(self):
-        with tempfile.NamedTemporaryFile(delete=False) as f:
-            path = f.name
+        path = _temp_path()
         try:
             fm = FileManager()
             req = json.dumps({"op": "file_init", "path": path, "direction": "upload"}).encode()
@@ -138,8 +145,7 @@ class ChunkedTransferProtocolTests(unittest.TestCase):
         self.assertEqual(resp["op"], "error")
 
     def test_file_complete_ack_cleanup(self):
-        with tempfile.NamedTemporaryFile(delete=False) as f:
-            path = f.name
+        path = _temp_path()
         try:
             fm = FileManager()
             req = json.dumps({"op": "file_init", "path": path, "direction": "upload"}).encode()
@@ -183,10 +189,10 @@ class SimpleFileOpsTests(unittest.TestCase):
         self.assertEqual(resp["op"], "error")
 
     def test_read_file_valid(self):
-        with tempfile.NamedTemporaryFile(delete=False, mode="wb") as f:
-            f.write(b"file content")
-            path = f.name
+        path = _temp_path()
         try:
+            with open(path, "wb") as f:
+                f.write(b"file content")
             fm = FileManager()
             req = json.dumps({"op": "read", "path": path, "id": "r1"}).encode()
             resp = json.loads(fm.handle_message(req))
@@ -213,8 +219,7 @@ class SimpleFileOpsTests(unittest.TestCase):
             os.rmdir(tmpdir)
 
     def test_write_file_valid(self):
-        with tempfile.NamedTemporaryFile(delete=False) as f:
-            path = f.name
+        path = _temp_path()
         try:
             fm = FileManager()
             content_b64 = base64.b64encode(b"new content").decode()
