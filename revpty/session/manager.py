@@ -10,6 +10,7 @@ from enum import Enum
 from typing import Set, Optional
 from dataclasses import dataclass
 from .buffer import OutputRingBuffer
+from ..platform_utils import default_shell
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +25,7 @@ class SessionState(Enum):
 @dataclass
 class SessionConfig:
     """Session configuration"""
-    shell: str = "/bin/bash"
+    shell: str = default_shell()
     idle_timeout: int = 3600  # seconds before auto-cleanup
     enable_log: bool = True
     output_cache_size: int = 131072  # 128KB output cache for browser replay

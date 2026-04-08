@@ -7,8 +7,10 @@ import tempfile
 import unittest
 
 from revpty.client.pty_shell import PTYShell
+from revpty.platform_utils import default_shell
 
 
+@unittest.skipIf(sys.platform == "win32", "Unix PTY tests")
 class PTYShellTests(unittest.IsolatedAsyncioTestCase):
     """Tests requiring real PTY - these run on Linux/macOS."""
 
@@ -157,9 +159,9 @@ class PTYShellTests(unittest.IsolatedAsyncioTestCase):
             pty.stop()
 
     async def test_default_shell(self):
-        """PTYShell without args uses /bin/bash."""
+        """PTYShell without args uses platform default shell."""
         pty = PTYShell()
-        self.assertEqual(pty.shell, "/bin/bash")
+        self.assertEqual(pty.shell, default_shell())
 
     async def test_stop_is_idempotent(self):
         """Calling stop() multiple times should be safe."""

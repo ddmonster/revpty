@@ -6,6 +6,7 @@ import os
 import json
 from revpty.protocol.frame import Frame, FrameType
 from revpty.protocol.codec import encode, decode
+from revpty.platform_utils import IS_WINDOWS, default_shell
 from .pty_shell import PTYShell
 from .file_manager import FileManager
 from .mux import ConnectionMux
@@ -24,7 +25,10 @@ logger = logging.getLogger(__name__)
 class ShellWorker:
     """PTY worker that uses a shared ConnectionMux for communication."""
 
-    def __init__(self, mux: ConnectionMux, session: str, shell: str = "/bin/bash", pty_factory=PTYShell):
+    def __init__(self, mux: ConnectionMux, session: str, shell: str = None, pty_factory=PTYShell):
+        self.mux = mux
+        self.session = session
+        self.shell = shell or default_shell()
         self.mux = mux
         self.session = session
         self.shell = shell
@@ -180,11 +184,11 @@ class ShellWorker:
 class Agent:
     """Main agent that uses ConnectionMux for all WS communication."""
 
-    def __init__(self, server, session, shell="/bin/bash", proxy=None, secret=None,
+    def __init__(self, server, session, shell=None, proxy=None, secret=None,
                  cf_client_id=None, cf_client_secret=None, insecure=False, tunnels=None, pty_factory=PTYShell):
         self.server = server
         self.session = session
-        self.shell = shell
+        self.shell = shell or default_shell()
         self.proxy = proxy
         self.secret = secret
         self.cf_client_id = cf_client_id
@@ -458,8 +462,11 @@ class Agent:
             self._stop_event.set()
 
         loop = asyncio.get_running_loop()
-        for sig in (signal.SIGTERM, signal.SIGINT):
-            loop.add_signal_handler(sig, signal_handler)
+        if IS_WINDOWS:
+            loop.add_signal_handler(signal.SIGINT, signal_handler)
+        else:
+            for sig in (signal.SIGTERM, signal.SIGINT):
+                loop.add_signal_handler(sig, signal_handler)
 
         try:
             # Register main session with mux and start mux

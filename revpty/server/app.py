@@ -12,6 +12,7 @@ from aiohttp import web
 from aiohttp import WSMsgType
 from revpty.protocol.codec import decode, encode, ProtocolError
 from revpty.protocol.frame import Frame, FrameType, Role
+from revpty.platform_utils import default_shell
 from revpty.session import SessionManager, SessionConfig
 from revpty.client.pty_shell import PTYShell
 from revpty.server.tunnel import TunnelManager
@@ -626,7 +627,7 @@ async def on_startup(app):
     
     # Initialize Session Manager
     config = SessionConfig(
-        shell="/bin/bash",
+        shell=default_shell(),
         idle_timeout=3600,
         enable_log=True,
         output_cache_size=cache_size

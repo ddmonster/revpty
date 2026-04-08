@@ -4,8 +4,6 @@ import aiohttp
 import os
 from aiohttp import WSMsgType
 import sys
-import tty
-import termios
 import os
 import random
 import time
@@ -13,7 +11,14 @@ import json
 import uuid
 from enum import Enum
 import signal
-from select import select
+from revpty.platform_utils import IS_WINDOWS
+
+if IS_WINDOWS:
+    import msvcrt
+else:
+    import tty
+    import termios
+    from select import select
 
 from revpty.protocol.frame import Frame, FrameType
 from revpty.protocol.codec import encode, decode
@@ -55,13 +60,30 @@ class InteractiveTerminal:
     def setup_terminal(self):
         if not sys.stdin.isatty():
             return
-        self._old_tty = termios.tcgetattr(sys.stdin)
-        tty.setraw(sys.stdin.fileno())
+        if IS_WINDOWS:
+            import ctypes
+            self._kernel32 = ctypes.windll.kernel32
+            self._stdin_handle = ctypes.windll.kernel32.GetStdHandle(-10)  # STD_INPUT_HANDLE
+            self._old_mode = ctypes.c_ulong()
+            self._kernel32.GetConsoleMode(self._stdin_handle, ctypes.byref(self._old_mode))
+            # Disable line input and echo, enable virtual terminal input
+            new_mode = self._old_mode.value & ~0x0002  # remove ENABLE_LINE_INPUT
+            new_mode = new_mode & ~0x0004  # remove ENABLE_ECHO_INPUT
+            new_mode = new_mode | 0x0200   # add ENABLE_VIRTUAL_TERMINAL_INPUT
+            self._kernel32.SetConsoleMode(self._stdin_handle, new_mode)
+        else:
+            self._old_tty = termios.tcgetattr(sys.stdin)
+            tty.setraw(sys.stdin.fileno())
 
     def restore_terminal(self):
-        if self._old_tty:
-            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self._old_tty)
-            print()
+        if IS_WINDOWS:
+            if hasattr(self, '_stdin_handle') and hasattr(self, '_old_mode'):
+                self._kernel32.SetConsoleMode(self._stdin_handle, self._old_mode)
+                print()
+        else:
+            if self._old_tty:
+                termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self._old_tty)
+                print()
 
     # ---------- Protocol helpers ----------
 
@@ -88,7 +110,7 @@ class InteractiveTerminal:
             )
             self.state = AttachState.ATTACH_SENT
             await self._send_resize()
-            if sys.stdin.isatty():
+            if not IS_WINDOWS and sys.stdin.isatty():
                 loop.add_signal_handler(signal.SIGWINCH, lambda: asyncio.create_task(self._send_resize()))
                 self._sigwinch_enabled = True
 
@@ -184,6 +206,12 @@ class InteractiveTerminal:
     # ---------- stdin → WS ----------
 
     async def _read_from_stdin(self):
+        if IS_WINDOWS:
+            await self._read_from_stdin_windows()
+        else:
+            await self._read_from_stdin_unix()
+
+    async def _read_from_stdin_unix(self):
         fd = sys.stdin.fileno()
         loop = asyncio.get_running_loop()
 
@@ -195,6 +223,35 @@ class InteractiveTerminal:
                 data = os.read(fd, 1024)
                 if not data:
                     break
+
+                # Ctrl+] detach
+                if b"\x1d" in data:
+                    logger.info("\n[*] Detaching from session...")
+                    self._detached_by_user = True
+                    break
+
+                await self.send_frame(
+                    Frame(
+                        session=self.session,
+                        role="browser",
+                        type=FrameType.INPUT.value,
+                        data=data,
+                    )
+                )
+
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"\r[x] stdin read error: {e}")
+
+    async def _read_from_stdin_windows(self):
+        try:
+            while True:
+                await asyncio.sleep(0.01)
+                if not msvcrt.kbhit():
+                    continue
+                ch = msvcrt.getwch()
+                data = ch.encode("utf-8", errors="replace")
 
                 # Ctrl+] detach
                 if b"\x1d" in data:

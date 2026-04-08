@@ -11,6 +11,7 @@ from pathlib import Path
 from revpty.server.app import run as run_server
 from revpty.client.agent import Agent
 from revpty.cli.attach import attach
+from revpty.platform_utils import IS_WINDOWS, default_shell
 
 
 def load_config(config_path: str) -> dict:
@@ -142,6 +143,8 @@ def server():
     cache_size = args.cache_size or config.get("cache_size", 131072)
 
     if args.install:
+        if IS_WINDOWS:
+            raise SystemExit("--install is not supported on Windows")
         exe = _resolve_executable("revpty-server")
         cmd = [exe, "--host", host, "--port", str(port)]
         if secret:
@@ -184,12 +187,14 @@ def client():
     secret = args.secret if args.secret is not None else config.get("secret")
     cf_client_id = args.cf_client_id or config.get("cf_client_id")
     cf_client_secret = args.cf_client_secret or config.get("cf_client_secret")
-    shell = args.exec or config.get("exec", "/bin/bash")
+    shell = args.exec or config.get("exec", default_shell())
     tunnels = args.tunnel if args.tunnel is not None else config.get("tunnels", [])
     insecure = args.insecure or config.get("insecure", False)
 
     ws_url = convert_to_ws_url(server_url)
     if args.install:
+        if IS_WINDOWS:
+            raise SystemExit("--install is not supported on Windows")
         exe = _resolve_executable("revpty-client")
         cmd = [exe, "--server", server_url, "--session", session]
         if proxy:
@@ -200,7 +205,7 @@ def client():
             cmd += ["--cf-client-id", cf_client_id]
         if cf_client_secret:
             cmd += ["--cf-client-secret", cf_client_secret]
-        if shell != "/bin/bash":
+        if shell != default_shell():
             cmd += ["--exec", shell]
         for t in tunnels:
             cmd += ["--tunnel", t]
