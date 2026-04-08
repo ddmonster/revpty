@@ -18,13 +18,20 @@ def _temp_path():
     return path
 
 
+def _cleanup_transfers(fm: FileManager):
+    """Close all active file transfers (needed on Windows to release file locks)."""
+    for tid, xfer in list(fm.active_transfers.items()):
+        xfer.close()
+    fm.active_transfers.clear()
+
+
 class ChunkedTransferProtocolTests(unittest.TestCase):
     """Tests for chunked transfer protocol handlers."""
 
     def test_file_chunk_valid_write(self):
         path = _temp_path()
+        fm = FileManager()
         try:
-            fm = FileManager()
             # Init upload
             req = json.dumps({"op": "file_init", "path": path, "direction": "upload", "chunk_size": 50}).encode()
             resp = json.loads(fm.handle_message(req))
@@ -41,12 +48,13 @@ class ChunkedTransferProtocolTests(unittest.TestCase):
             self.assertEqual(resp2["op"], "file_chunk_ack")
             self.assertEqual(resp2["seq"], 0)
         finally:
+            _cleanup_transfers(fm)
             os.unlink(path)
 
     def test_file_chunk_crc_mismatch(self):
         path = _temp_path()
+        fm = FileManager()
         try:
-            fm = FileManager()
             req = json.dumps({"op": "file_init", "path": path, "direction": "upload"}).encode()
             resp = json.loads(fm.handle_message(req))
             tid = resp["transfer_id"]
@@ -60,6 +68,7 @@ class ChunkedTransferProtocolTests(unittest.TestCase):
             self.assertEqual(resp2["op"], "file_chunk_nack")
             self.assertEqual(resp2["reason"], "crc_mismatch")
         finally:
+            _cleanup_transfers(fm)
             os.unlink(path)
 
     def test_file_chunk_unknown_transfer(self):
@@ -73,10 +82,10 @@ class ChunkedTransferProtocolTests(unittest.TestCase):
 
     def test_file_chunk_ack_sliding_window(self):
         path = _temp_path()
+        fm = FileManager()
         try:
             with open(path, "wb") as f:
                 f.write(b"A" * 200)
-            fm = FileManager()
             req = json.dumps({"op": "file_init", "path": path, "direction": "download", "chunk_size": 50}).encode()
             resp = json.loads(fm.handle_message(req))
             tid = resp["transfer_id"]
@@ -91,6 +100,7 @@ class ChunkedTransferProtocolTests(unittest.TestCase):
                 ops = [resp2["op"]]
             self.assertTrue(all(op == "file_chunk" for op in ops))
         finally:
+            _cleanup_transfers(fm)
             os.unlink(path)
 
     def test_file_chunk_ack_unknown_transfer(self):
@@ -101,10 +111,10 @@ class ChunkedTransferProtocolTests(unittest.TestCase):
 
     def test_file_chunk_nack_retransmit(self):
         path = _temp_path()
+        fm = FileManager()
         try:
             with open(path, "wb") as f:
                 f.write(b"A" * 100)
-            fm = FileManager()
             req = json.dumps({"op": "file_init", "path": path, "direction": "download", "chunk_size": 50}).encode()
             resp = json.loads(fm.handle_message(req))
             tid = resp["transfer_id"]
@@ -115,6 +125,7 @@ class ChunkedTransferProtocolTests(unittest.TestCase):
             self.assertEqual(resp2["op"], "file_chunk")
             self.assertEqual(resp2["seq"], 0)
         finally:
+            _cleanup_transfers(fm)
             os.unlink(path)
 
     def test_file_chunk_nack_unknown_transfer(self):
