@@ -1,23 +1,25 @@
 import asyncio
+import json
 import logging
+import os
 import signal
 import time
-import os
-import json
-from revpty.protocol.frame import Frame, FrameType
-from revpty.protocol.codec import encode, decode
+
 from revpty.platform_utils import IS_WINDOWS, default_shell
-from .pty_shell import PTYShell
+from revpty.protocol.codec import decode, encode
+from revpty.protocol.frame import Frame, FrameType
+
 from .file_manager import FileManager
 from .mux import ConnectionMux
+from .pty_shell import PTYShell
 from .tunnel_proxy import TunnelProxy
 
 _level_name = os.getenv("LOG_LEVEL", "INFO").upper()
 _level = getattr(logging, _level_name, logging.INFO)
 logging.basicConfig(
     level=_level,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger(__name__)
 
@@ -25,7 +27,9 @@ logger = logging.getLogger(__name__)
 class ShellWorker:
     """PTY worker that uses a shared ConnectionMux for communication."""
 
-    def __init__(self, mux: ConnectionMux, session: str, shell: str = None, pty_factory=PTYShell):
+    def __init__(
+        self, mux: ConnectionMux, session: str, shell: str = None, pty_factory=PTYShell
+    ):
         self.mux = mux
         self.session = session
         self.shell = shell or default_shell()
@@ -75,13 +79,17 @@ class ShellWorker:
                             self.shell_instance.resize(frame.rows, frame.cols)
                 elif frame.type == FrameType.FILE.value:
                     if frame.data:
-                        response_data = await asyncio.to_thread(self.file_manager.handle_message, frame.data)
-                        frame_str = encode(Frame(
-                            session=self.session,
-                            role="client",
-                            type=FrameType.FILE.value,
-                            data=response_data
-                        ))
+                        response_data = await asyncio.to_thread(
+                            self.file_manager.handle_message, frame.data
+                        )
+                        frame_str = encode(
+                            Frame(
+                                session=self.session,
+                                role="client",
+                                type=FrameType.FILE.value,
+                                data=response_data,
+                            )
+                        )
                         await self.mux.send(frame_str, FrameType.FILE.value)
                 elif frame.type == FrameType.CONTROL.value:
                     if frame.data:
@@ -90,24 +98,26 @@ class ShellWorker:
                         except Exception:
                             continue
                         if payload.get("op") == "close_shell":
-                            ack = encode(Frame(
-                                session=self.session,
-                                role="client",
-                                type=FrameType.CONTROL.value,
-                                data=json.dumps({
-                                    "op": "close_shell_ack",
-                                    "session": self.session,
-                                }).encode("utf-8")
-                            ))
+                            ack = encode(
+                                Frame(
+                                    session=self.session,
+                                    role="client",
+                                    type=FrameType.CONTROL.value,
+                                    data=json.dumps(
+                                        {
+                                            "op": "close_shell_ack",
+                                            "session": self.session,
+                                        }
+                                    ).encode("utf-8"),
+                                )
+                            )
                             await self.mux.send(ack, FrameType.CONTROL.value)
                             self._stop_event.set()
                             break
                 elif frame.type == FrameType.PING.value:
-                    pong = encode(Frame(
-                        session=self.session,
-                        role="client",
-                        type="pong"
-                    ))
+                    pong = encode(
+                        Frame(session=self.session, role="client", type="pong")
+                    )
                     await self.mux.send(pong, FrameType.PONG.value)
         except asyncio.CancelledError:
             pass
@@ -129,12 +139,14 @@ class ShellWorker:
                     if not data:
                         await self._ensure_shell()
                         continue
-                    frame_str = encode(Frame(
-                        session=self.session,
-                        role="client",
-                        type="output",
-                        data=data
-                    ))
+                    frame_str = encode(
+                        Frame(
+                            session=self.session,
+                            role="client",
+                            type="output",
+                            data=data,
+                        )
+                    )
                     await self.mux.send(frame_str, FrameType.OUTPUT.value)
                 except asyncio.TimeoutError:
                     continue
@@ -184,8 +196,19 @@ class ShellWorker:
 class Agent:
     """Main agent that uses ConnectionMux for all WS communication."""
 
-    def __init__(self, server, session, shell=None, proxy=None, secret=None,
-                 cf_client_id=None, cf_client_secret=None, insecure=False, tunnels=None, pty_factory=PTYShell):
+    def __init__(
+        self,
+        server,
+        session,
+        shell=None,
+        proxy=None,
+        secret=None,
+        cf_client_id=None,
+        cf_client_secret=None,
+        insecure=False,
+        tunnels=None,
+        pty_factory=PTYShell,
+    ):
         self.server = server
         self.session = session
         self.shell = shell or default_shell()
@@ -204,18 +227,25 @@ class Agent:
         self.shell_instance = None
         self.shell_workers: dict[str, ShellWorker] = {}
         self.shell_worker_tasks: dict[str, asyncio.Task] = {}
-        self._registered_tunnels: dict[str, dict] = {}  # tunnel_id -> {local_host, local_port}
+        self._registered_tunnels: dict[
+            str, dict
+        ] = {}  # tunnel_id -> {local_host, local_port}
 
         # ConnectionMux handles all WS communication
-        self.mux = ConnectionMux(server, proxy=proxy, secret=secret,
-                                  cf_client_id=cf_client_id, cf_client_secret=cf_client_secret,
-                                  insecure=insecure)
+        self.mux = ConnectionMux(
+            server,
+            proxy=proxy,
+            secret=secret,
+            cf_client_id=cf_client_id,
+            cf_client_secret=cf_client_secret,
+            insecure=insecure,
+        )
         self._queue: asyncio.Queue = None
 
     def _parse_tunnel_spec(self, spec: str) -> tuple[str, int]:
         """Parse tunnel spec like '8080' or '127.0.0.1:8080' into (host, port)."""
-        if ':' in spec:
-            host, port = spec.rsplit(':', 1)
+        if ":" in spec:
+            host, port = spec.rsplit(":", 1)
             return host, int(port)
         return "127.0.0.1", int(spec)
 
@@ -224,16 +254,20 @@ class Agent:
         for spec in self.tunnels:
             try:
                 local_host, local_port = self._parse_tunnel_spec(spec)
-                frame = encode(Frame(
-                    session=self.session,
-                    role="client",
-                    type=FrameType.CONTROL.value,
-                    data=json.dumps({
-                        "op": "tunnel_register",
-                        "local_host": local_host,
-                        "local_port": local_port
-                    }).encode()
-                ))
+                frame = encode(
+                    Frame(
+                        session=self.session,
+                        role="client",
+                        type=FrameType.CONTROL.value,
+                        data=json.dumps(
+                            {
+                                "op": "tunnel_register",
+                                "local_host": local_host,
+                                "local_port": local_port,
+                            }
+                        ).encode(),
+                    )
+                )
                 await self.mux.send(frame, FrameType.CONTROL.value)
                 logger.info(f"[tunnel] Registering tunnel -> {local_host}:{local_port}")
             except Exception as e:
@@ -249,18 +283,24 @@ class Agent:
                     if spec not in registered:
                         try:
                             local_host, local_port = self._parse_tunnel_spec(spec)
-                            frame = encode(Frame(
-                                session=self.session,
-                                role="client",
-                                type=FrameType.CONTROL.value,
-                                data=json.dumps({
-                                    "op": "tunnel_register",
-                                    "local_host": local_host,
-                                    "local_port": local_port
-                                }).encode()
-                            ))
+                            frame = encode(
+                                Frame(
+                                    session=self.session,
+                                    role="client",
+                                    type=FrameType.CONTROL.value,
+                                    data=json.dumps(
+                                        {
+                                            "op": "tunnel_register",
+                                            "local_host": local_host,
+                                            "local_port": local_port,
+                                        }
+                                    ).encode(),
+                                )
+                            )
                             await self.mux.send(frame, FrameType.CONTROL.value)
-                            logger.info(f"[tunnel] Registered -> {local_host}:{local_port}")
+                            logger.info(
+                                f"[tunnel] Registered -> {local_host}:{local_port}"
+                            )
                             registered.add(spec)
                         except Exception as e:
                             logger.error(f"[tunnel] Failed to register {spec}: {e}")
@@ -297,10 +337,12 @@ class Agent:
             tunnel_id = payload.get("tunnel_id")
             local_port = payload.get("local_port")
             if payload.get("ok"):
-                logger.info(f"[tunnel] Registered tunnel_id={tunnel_id} for port {local_port}")
+                logger.info(
+                    f"[tunnel] Registered tunnel_id={tunnel_id} for port {local_port}"
+                )
                 self._registered_tunnels[tunnel_id] = {
                     "local_host": "127.0.0.1",
-                    "local_port": local_port
+                    "local_port": local_port,
                 }
             else:
                 logger.error(f"[tunnel] Registration failed for port {local_port}")
@@ -315,17 +357,21 @@ class Agent:
             if not new_session:
                 return
             if new_session in self.shell_workers:
-                ack = encode(Frame(
-                    session=self.session,
-                    role="client",
-                    type=FrameType.CONTROL.value,
-                    data=json.dumps({
-                        "op": "new_shell_ack",
-                        "session": new_session,
-                        "ok": False,
-                        "error": "session exists",
-                    }).encode("utf-8")
-                ))
+                ack = encode(
+                    Frame(
+                        session=self.session,
+                        role="client",
+                        type=FrameType.CONTROL.value,
+                        data=json.dumps(
+                            {
+                                "op": "new_shell_ack",
+                                "session": new_session,
+                                "ok": False,
+                                "error": "session exists",
+                            }
+                        ).encode("utf-8"),
+                    )
+                )
                 await self.mux.send(ack, FrameType.CONTROL.value)
                 return
             worker = ShellWorker(
@@ -341,30 +387,37 @@ class Agent:
             def _cleanup(_, sid=new_session):
                 self.shell_workers.pop(sid, None)
                 self.shell_worker_tasks.pop(sid, None)
+
             task.add_done_callback(_cleanup)
 
-            ack = encode(Frame(
-                session=self.session,
-                role="client",
-                type=FrameType.CONTROL.value,
-                data=json.dumps({
-                    "op": "new_shell_ack",
-                    "session": new_session,
-                    "ok": True,
-                }).encode("utf-8")
-            ))
+            ack = encode(
+                Frame(
+                    session=self.session,
+                    role="client",
+                    type=FrameType.CONTROL.value,
+                    data=json.dumps(
+                        {
+                            "op": "new_shell_ack",
+                            "session": new_session,
+                            "ok": True,
+                        }
+                    ).encode("utf-8"),
+                )
+            )
             await self.mux.send(ack, FrameType.CONTROL.value)
 
     async def _handle_tunnel_request(self, payload: dict):
         """Forward a tunnel request to the local service and send response back."""
         try:
             response_data = await self.tunnel_proxy.handle_request(payload)
-            frame_str = encode(Frame(
-                session=self.session,
-                role="client",
-                type=FrameType.CONTROL.value,
-                data=response_data,
-            ))
+            frame_str = encode(
+                Frame(
+                    session=self.session,
+                    role="client",
+                    type=FrameType.CONTROL.value,
+                    data=response_data,
+                )
+            )
             await self.mux.send(frame_str, FrameType.CONTROL.value)
         except Exception as e:
             logger.error(f"[x] Tunnel request error: {e}")
@@ -378,7 +431,9 @@ class Agent:
                 except asyncio.TimeoutError:
                     continue
 
-                logger.debug(f"[<] Frame: {frame.type} from {frame.role}, data_len={len(frame.data) if frame.data else 0}")
+                logger.debug(
+                    f"[<] Frame: {frame.type} from {frame.role}, data_len={len(frame.data) if frame.data else 0}"
+                )
 
                 if frame.type == FrameType.INPUT.value:
                     await self._ensure_shell()
@@ -391,23 +446,25 @@ class Agent:
                             self.shell_instance.resize(frame.rows, frame.cols)
                 elif frame.type == FrameType.FILE.value:
                     if frame.data:
-                        response_data = await asyncio.to_thread(self.file_manager.handle_message, frame.data)
-                        frame_str = encode(Frame(
-                            session=self.session,
-                            role="client",
-                            type=FrameType.FILE.value,
-                            data=response_data
-                        ))
+                        response_data = await asyncio.to_thread(
+                            self.file_manager.handle_message, frame.data
+                        )
+                        frame_str = encode(
+                            Frame(
+                                session=self.session,
+                                role="client",
+                                type=FrameType.FILE.value,
+                                data=response_data,
+                            )
+                        )
                         await self.mux.send(frame_str, FrameType.FILE.value)
                 elif frame.type == FrameType.CONTROL.value:
                     await self._handle_control(frame)
                 elif frame.type == FrameType.PING.value:
                     logger.debug("[<] Ping received, sending pong")
-                    pong = encode(Frame(
-                        session=self.session,
-                        role="client",
-                        type="pong"
-                    ))
+                    pong = encode(
+                        Frame(session=self.session, role="client", type="pong")
+                    )
                     await self.mux.send(pong, FrameType.PONG.value)
         except asyncio.CancelledError:
             pass
@@ -429,12 +486,14 @@ class Agent:
                     if not data:
                         await self._ensure_shell()
                         continue
-                    frame_str = encode(Frame(
-                        session=self.session,
-                        role="client",
-                        type="output",
-                        data=data
-                    ))
+                    frame_str = encode(
+                        Frame(
+                            session=self.session,
+                            role="client",
+                            type="output",
+                            data=data,
+                        )
+                    )
                     await self.mux.send(frame_str, FrameType.OUTPUT.value)
                 except asyncio.TimeoutError:
                     continue
@@ -462,9 +521,7 @@ class Agent:
             self._stop_event.set()
 
         loop = asyncio.get_running_loop()
-        if IS_WINDOWS:
-            loop.add_signal_handler(signal.SIGINT, signal_handler)
-        else:
+        if not IS_WINDOWS:
             for sig in (signal.SIGTERM, signal.SIGINT):
                 loop.add_signal_handler(sig, signal_handler)
 
@@ -508,6 +565,8 @@ class Agent:
             # Close mux
             await self.mux.close()
             logger.info("[*] revpty client stopped")
-            logger.info(f"[*] mux metrics: rtt={self.mux.metrics.rtt_ms:.0f}ms, "
-                        f"sent={self.mux.metrics.bytes_sent}, recv={self.mux.metrics.bytes_received}, "
-                        f"reconnects={self.mux.metrics.reconnect_count}")
+            logger.info(
+                f"[*] mux metrics: rtt={self.mux.metrics.rtt_ms:.0f}ms, "
+                f"sent={self.mux.metrics.bytes_sent}, recv={self.mux.metrics.bytes_received}, "
+                f"reconnects={self.mux.metrics.reconnect_count}"
+            )
