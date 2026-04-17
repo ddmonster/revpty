@@ -204,11 +204,3 @@ if __name__ == "__main__":
     shell_with_pty_spawn()
     shell_with_popen()
     interactive_shell_example()
-
-
-def __main__():
-    pid, fd = pty.fork()
-    print("fork")
-    os.write(fd, b"ls\n")
-    rs = os.read(fd, 1024)
-    print(rs)
