@@ -1,20 +1,22 @@
 import argparse
 import asyncio
+import json
 import os
 import shlex
 import shutil
 import subprocess
 import sys
-import json
+
 try:
     import tomllib
 except ModuleNotFoundError:
     import tomli as tomllib
 from pathlib import Path
-from revpty.server.app import run as run_server
-from revpty.client.agent import Agent
+
 from revpty.cli.attach import attach
+from revpty.client.agent import Agent
 from revpty.platform_utils import IS_WINDOWS, default_shell
+from revpty.server.app import run as run_server
 
 
 def load_config(config_path: str) -> dict:
@@ -41,28 +43,28 @@ def convert_to_ws_url(url):
     url = url.strip()
 
     # Remove trailing slash
-    url = url.rstrip('/')
+    url = url.rstrip("/")
 
     # If already ws:// or wss:// with path, return as-is
-    if url.startswith('ws://') or url.startswith('wss://'):
+    if url.startswith("ws://") or url.startswith("wss://"):
         # Add /revpty/ws if no path
-        if '/' not in url[5:]:
-            return url + '/revpty/ws'
+        if "/" not in url[5:]:
+            return url + "/revpty/ws"
         return url
 
     # Convert http:// to ws://
-    if url.startswith('http://'):
-        return url.replace('http://', 'ws://', 1) + '/revpty/ws'
+    if url.startswith("http://"):
+        return url.replace("http://", "ws://", 1) + "/revpty/ws"
 
     # Convert https:// to wss://
-    if url.startswith('https://'):
-        return url.replace('https://', 'wss://', 1) + '/revpty/ws'
+    if url.startswith("https://"):
+        return url.replace("https://", "wss://", 1) + "/revpty/ws"
 
     # Default to ws:// if no scheme specified
-    if not url.startswith(('http://', 'https://', 'ws://', 'wss://')):
-        return f'ws://{url}/revpty/ws'
+    if not url.startswith(("http://", "https://", "ws://", "wss://")):
+        return f"ws://{url}/revpty/ws"
 
-    return url + '/revpty/ws'
+    return url + "/revpty/ws"
 
 
 def _resolve_executable(name: str) -> str:
@@ -74,9 +76,16 @@ def _resolve_executable(name: str) -> str:
     return name
 
 
-def _install_systemd(service_name: str, exec_args: list[str], user_mode: bool = False, config_path: str = None):
+def _install_systemd(
+    service_name: str,
+    exec_args: list[str],
+    user_mode: bool = False,
+    config_path: str = None,
+):
     if not shutil.which("systemctl"):
-        raise SystemExit("systemctl not found; this command is for systemd-based Linux systems only")
+        raise SystemExit(
+            "systemctl not found; this command is for systemd-based Linux systems only"
+        )
 
     if user_mode:
         unit_dir = os.path.expanduser("~/.config/systemd/user")
@@ -85,7 +94,9 @@ def _install_systemd(service_name: str, exec_args: list[str], user_mode: bool = 
         wanted_by = "default.target"
     else:
         if os.geteuid() != 0:
-            raise SystemExit("run as root to install systemd service (or use --user for user-level)")
+            raise SystemExit(
+                "run as root to install systemd service (or use --user for user-level)"
+            )
         unit_path = f"/etc/systemd/system/{service_name}.service"
         wanted_by = "multi-user.target"
 
@@ -96,26 +107,30 @@ def _install_systemd(service_name: str, exec_args: list[str], user_mode: bool = 
 
     # If config file is specified, use it and simplify ExecStart
     if config_path:
-        exec_start = f"ExecStart={shlex.quote(exec_args[0])} --config {shlex.quote(config_path)}"
+        exec_start = (
+            f"ExecStart={shlex.quote(exec_args[0])} --config {shlex.quote(config_path)}"
+        )
     else:
         exec_start = f"ExecStart={' '.join(shlex.quote(arg) for arg in exec_args)}"
 
-    unit = "\n".join([
-        "[Unit]",
-        f"Description={service_name}",
-        "After=network.target",
-        "",
-        "[Service]",
-        "Type=simple",
-        *env_lines,
-        exec_start,
-        "Restart=always",
-        "RestartSec=1",
-        "",
-        "[Install]",
-        f"WantedBy={wanted_by}",
-        "",
-    ])
+    unit = "\n".join(
+        [
+            "[Unit]",
+            f"Description={service_name}",
+            "After=network.target",
+            "",
+            "[Service]",
+            "Type=simple",
+            *env_lines,
+            exec_start,
+            "Restart=always",
+            "RestartSec=1",
+            "",
+            "[Install]",
+            f"WantedBy={wanted_by}",
+            "",
+        ]
+    )
     with open(unit_path, "w") as f:
         f.write(unit)
     systemctl = ["systemctl", "--user"] if user_mode else ["systemctl"]
@@ -130,8 +145,15 @@ def server():
     p.add_argument("--port", type=int, default=None)
     p.add_argument("--secret", dest="secret", default=None)
     p.add_argument("--install", action="store_true")
-    p.add_argument("--user", action="store_true", help="Install as user-level systemd service")
-    p.add_argument("--cache-size", type=int, default=None, help="Output cache size in bytes (default: 131072 = 128KB)")
+    p.add_argument(
+        "--user", action="store_true", help="Install as user-level systemd service"
+    )
+    p.add_argument(
+        "--cache-size",
+        type=int,
+        default=None,
+        help="Output cache size in bytes (default: 131072 = 128KB)",
+    )
     args = p.parse_args()
 
     # Load config file if provided
@@ -154,7 +176,9 @@ def server():
             cmd += ["--secret", secret]
         if cache_size != 131072:
             cmd += ["--cache-size", str(cache_size)]
-        _install_systemd("revpty-server", cmd, user_mode=args.user, config_path=args.config)
+        _install_systemd(
+            "revpty-server", cmd, user_mode=args.user, config_path=args.config
+        )
         return
     run_server(host, port, secret=secret, cache_size=cache_size)
 
@@ -162,17 +186,39 @@ def server():
 def client():
     p = argparse.ArgumentParser()
     p.add_argument("--config", help="Load settings from TOML or JSON config file")
-    p.add_argument("--server", default=None, help="Server URL (auto-converts http/https to ws/wss)")
+    p.add_argument(
+        "--server", default=None, help="Server URL (auto-converts http/https to ws/wss)"
+    )
     p.add_argument("--session", default=None, help="Session name")
     p.add_argument("--proxy", default=None, help="HTTP proxy URL")
     p.add_argument("--secret", dest="secret", default=None)
-    p.add_argument("--cf-client-id", dest="cf_client_id", default=None, help="Cloudflare Access Client ID")
-    p.add_argument("--cf-client-secret", dest="cf_client_secret", default=None, help="Cloudflare Access Client Secret")
+    p.add_argument(
+        "--cf-client-id",
+        dest="cf_client_id",
+        default=None,
+        help="Cloudflare Access Client ID",
+    )
+    p.add_argument(
+        "--cf-client-secret",
+        dest="cf_client_secret",
+        default=None,
+        help="Cloudflare Access Client Secret",
+    )
     p.add_argument("--exec", default=None, help="Command to execute (e.g. /bin/bash)")
-    p.add_argument("--tunnel", action="append", default=None, help="Register HTTP tunnel (format: port or host:port)", metavar="PORT")
-    p.add_argument("--insecure", action="store_true", help="Skip SSL certificate verification")
+    p.add_argument(
+        "--tunnel",
+        action="append",
+        default=None,
+        help="Register HTTP tunnel (format: port or host:port)",
+        metavar="PORT",
+    )
+    p.add_argument(
+        "--insecure", action="store_true", help="Skip SSL certificate verification"
+    )
     p.add_argument("--install", action="store_true")
-    p.add_argument("--user", action="store_true", help="Install as user-level systemd service")
+    p.add_argument(
+        "--user", action="store_true", help="Install as user-level systemd service"
+    )
     args = p.parse_args()
 
     # Load config file if provided
@@ -214,26 +260,66 @@ def client():
             cmd += ["--tunnel", t]
         if insecure:
             cmd += ["--insecure"]
-        _install_systemd("revpty-client", cmd, user_mode=args.user, config_path=args.config)
+        _install_systemd(
+            "revpty-client", cmd, user_mode=args.user, config_path=args.config
+        )
         return
 
-    asyncio.run(Agent(ws_url, session, shell=shell, proxy=proxy, secret=secret,
-                      cf_client_id=cf_client_id, cf_client_secret=cf_client_secret,
-                      insecure=insecure, tunnels=tunnels).run())
+    try:
+        asyncio.run(
+            Agent(
+                ws_url,
+                session,
+                shell=shell,
+                proxy=proxy,
+                secret=secret,
+                cf_client_id=cf_client_id,
+                cf_client_secret=cf_client_secret,
+                insecure=insecure,
+                tunnels=tunnels,
+            ).run()
+        )
+    except KeyboardInterrupt:
+        print("\n[*] Client stopped by user")
+        sys.exit(0)
 
 
 def attach_cmd():
     p = argparse.ArgumentParser()
-    p.add_argument("--server", required=True, help="Server URL (auto-converts http/https to ws/wss)")
+    p.add_argument(
+        "--server",
+        required=True,
+        help="Server URL (auto-converts http/https to ws/wss)",
+    )
     p.add_argument("--session", required=True, help="Session name")
     p.add_argument("--proxy", default=None, help="HTTP proxy URL")
     p.add_argument("--secret", dest="secret", default=None)
-    p.add_argument("--cf-client-id", dest="cf_client_id", default=None, help="Cloudflare Access Client ID")
-    p.add_argument("--cf-client-secret", dest="cf_client_secret", default=None, help="Cloudflare Access Client Secret")
-    p.add_argument("--insecure", action="store_true", help="Skip SSL certificate verification")
+    p.add_argument(
+        "--cf-client-id",
+        dest="cf_client_id",
+        default=None,
+        help="Cloudflare Access Client ID",
+    )
+    p.add_argument(
+        "--cf-client-secret",
+        dest="cf_client_secret",
+        default=None,
+        help="Cloudflare Access Client Secret",
+    )
+    p.add_argument(
+        "--insecure", action="store_true", help="Skip SSL certificate verification"
+    )
     args = p.parse_args()
 
     ws_url = convert_to_ws_url(args.server)
-    asyncio.run(attach(ws_url, args.session, proxy=args.proxy, secret=args.secret,
-                       cf_client_id=args.cf_client_id, cf_client_secret=args.cf_client_secret,
-                       insecure=args.insecure))
+    asyncio.run(
+        attach(
+            ws_url,
+            args.session,
+            proxy=args.proxy,
+            secret=args.secret,
+            cf_client_id=args.cf_client_id,
+            cf_client_secret=args.cf_client_secret,
+            insecure=args.insecure,
+        )
+    )

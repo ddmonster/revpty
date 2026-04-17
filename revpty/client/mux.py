@@ -4,6 +4,7 @@ WebSocket Connection Multiplexer (Phase 4)
 Multiplexes multiple sessions over a single WebSocket connection.
 Incorporates network resilience features N1-N5, N8-N9.
 """
+
 import asyncio
 import logging
 import random
@@ -13,17 +14,18 @@ from dataclasses import dataclass, field
 import aiohttp
 from aiohttp import ClientSession, WSMsgType
 
+from revpty.protocol.codec import decode, encode
 from revpty.protocol.frame import Frame, FrameType
-from revpty.protocol.codec import encode, decode
 
 logger = logging.getLogger(__name__)
 
 # Frame priority levels
 PRIORITY_HIGH = 0  # INPUT, OUTPUT, RESIZE, PING, PONG, ATTACH, DETACH, STATUS, CONTROL
-PRIORITY_LOW = 1   # FILE, TUNNEL
+PRIORITY_LOW = 1  # FILE, TUNNEL
 
 # Map frame types to priorities (N5)
 _LOW_PRIORITY_TYPES = frozenset({FrameType.FILE.value})
+
 
 def _frame_priority(frame_type: str) -> int:
     if frame_type in _LOW_PRIORITY_TYPES:
@@ -34,6 +36,7 @@ def _frame_priority(frame_type: str) -> int:
 @dataclass
 class ConnectionMetrics:
     """Connection quality metrics (N9)"""
+
     rtt_ms: float = 0.0
     rtt_samples: list = field(default_factory=list)
     pong_miss_count: int = 0
@@ -64,9 +67,15 @@ class ConnectionMux:
     - N9: Connection quality metrics (RTT, loss tracking)
     """
 
-    def __init__(self, server: str, proxy: str = None, secret: str = None,
-                 cf_client_id: str = None, cf_client_secret: str = None,
-                 insecure: bool = False):
+    def __init__(
+        self,
+        server: str,
+        proxy: str = None,
+        secret: str = None,
+        cf_client_id: str = None,
+        cf_client_secret: str = None,
+        insecure: bool = False,
+    ):
         self.server = server
         self.proxy = proxy
         self.secret = secret
@@ -119,11 +128,13 @@ class ConnectionMux:
             # Send ATTACH immediately if already connected
             if self._connected and self._ws and not self._ws.closed:
                 try:
-                    attach_frame = encode(Frame(
-                        session=session_id,
-                        role=role,
-                        type="attach",
-                    ))
+                    attach_frame = encode(
+                        Frame(
+                            session=session_id,
+                            role=role,
+                            type="attach",
+                        )
+                    )
                     asyncio.create_task(self._ws.send_str(attach_frame))
                     logger.info(f"[mux] Attached session '{session_id}'")
                 except Exception as e:
@@ -170,7 +181,12 @@ class ConnectionMux:
         self._closing = True
         self._stop_event.set()
 
-        for task in [self._heartbeat_task, self._send_task, self._dispatch_task, self._connect_task]:
+        for task in [
+            self._heartbeat_task,
+            self._send_task,
+            self._dispatch_task,
+            self._connect_task,
+        ]:
             if task and not task.done():
                 task.cancel()
                 try:
@@ -199,8 +215,21 @@ class ConnectionMux:
                     headers["CF-Access-Client-Secret"] = self.cf_client_secret
                 if not headers:
                     headers = None
+
+                # Debug logging for authentication headers
+                if headers:
+                    logger.debug(f"[mux] WebSocket headers: {list(headers.keys())}")
+                    if self.cf_client_id:
+                        logger.debug(
+                            f"[mux] CF-Access-Client-Id: {self.cf_client_id[:20]}..."
+                        )
+                else:
+                    logger.debug("[mux] No authentication headers set")
                 timeout = aiohttp.ClientTimeout(
-                    total=30, connect=10, sock_connect=10, sock_read=15  # N3: reduced sock_read
+                    total=30,
+                    connect=10,
+                    sock_connect=10,
+                    sock_read=15,  # N3: reduced sock_read
                 )
 
                 proxy_info = f" via {self.proxy}" if self.proxy else ""
@@ -212,7 +241,7 @@ class ConnectionMux:
                         proxy=self.proxy,
                         headers=headers,
                         heartbeat=30,  # aiohttp-level safety net
-                        compress=15,   # N1: per-message deflate
+                        compress=15,  # N1: per-message deflate
                         ssl=False if self.insecure else None,
                     ) as ws:
                         self._ws = ws
@@ -233,10 +262,16 @@ class ConnectionMux:
                         # Start sub-tasks
                         self._send_task = asyncio.create_task(self._send_loop())
                         self._dispatch_task = asyncio.create_task(self._dispatch_loop())
-                        self._heartbeat_task = asyncio.create_task(self._heartbeat(interval=10))  # N3
+                        self._heartbeat_task = asyncio.create_task(
+                            self._heartbeat(interval=10)
+                        )  # N3
 
                         done, pending = await asyncio.wait(
-                            [self._send_task, self._dispatch_task, self._heartbeat_task],
+                            [
+                                self._send_task,
+                                self._dispatch_task,
+                                self._heartbeat_task,
+                            ],
                             return_when=asyncio.FIRST_COMPLETED,
                         )
                         for t in pending:
@@ -266,7 +301,9 @@ class ConnectionMux:
                 if retry_delay > 0:
                     logger.info(f"[mux] Reconnecting in {retry_delay:.1f}s...")
                     try:
-                        await asyncio.wait_for(self._stop_event.wait(), timeout=retry_delay)
+                        await asyncio.wait_for(
+                            self._stop_event.wait(), timeout=retry_delay
+                        )
                     except asyncio.TimeoutError:
                         pass
                     except asyncio.CancelledError:
@@ -277,7 +314,9 @@ class ConnectionMux:
                 if retry_delay == 0:
                     retry_delay = 1
                 else:
-                    retry_delay = min(retry_delay * 2, 10) + random.uniform(0, retry_delay * 0.3)
+                    retry_delay = min(retry_delay * 2, 10) + random.uniform(
+                        0, retry_delay * 0.3
+                    )
             except Exception as e:
                 self._connected = False
                 logger.error(f"[mux] Unexpected error: {e}")
@@ -287,11 +326,13 @@ class ConnectionMux:
         """Re-ATTACH all registered sessions after reconnect."""
         for sid, role in list(self._session_roles.items()):
             try:
-                attach_frame = encode(Frame(
-                    session=sid,
-                    role=role,
-                    type="attach",
-                ))
+                attach_frame = encode(
+                    Frame(
+                        session=sid,
+                        role=role,
+                        type="attach",
+                    )
+                )
                 await self._ws.send_str(attach_frame)
                 logger.info(f"[mux] Re-attached session '{sid}'")
             except Exception as e:
@@ -302,14 +343,18 @@ class ConnectionMux:
         for sid, buf in self._offline_buffers.items():
             if buf:
                 try:
-                    frame_str = encode(Frame(
-                        session=sid,
-                        role=self._session_roles.get(sid, "client"),
-                        type=FrameType.OUTPUT.value,
-                        data=bytes(buf),
-                    ))
+                    frame_str = encode(
+                        Frame(
+                            session=sid,
+                            role=self._session_roles.get(sid, "client"),
+                            type=FrameType.OUTPUT.value,
+                            data=bytes(buf),
+                        )
+                    )
                     await self._ws.send_str(frame_str)
-                    logger.info(f"[mux] Flushed {len(buf)} bytes offline buffer for '{sid}'")
+                    logger.info(
+                        f"[mux] Flushed {len(buf)} bytes offline buffer for '{sid}'"
+                    )
                 except Exception as e:
                     logger.error(f"[mux] Failed to flush buffer for '{sid}': {e}")
                 buf.clear()
@@ -390,7 +435,9 @@ class ConnectionMux:
                     if queue is not None:
                         await queue.put(frame)
                     else:
-                        logger.debug(f"[mux] No handler for session '{frame.session}' type={frame.type}")
+                        logger.debug(
+                            f"[mux] No handler for session '{frame.session}' type={frame.type}"
+                        )
 
                 elif msg.type in (WSMsgType.CLOSED, WSMsgType.CLOSING):
                     break
@@ -416,7 +463,9 @@ class ConnectionMux:
 
                 # Check for missed pongs (N3)
                 if self._pong_miss_count >= 2:
-                    logger.warning("[mux] 2 consecutive pongs missed, forcing reconnect")
+                    logger.warning(
+                        "[mux] 2 consecutive pongs missed, forcing reconnect"
+                    )
                     self.metrics.pong_miss_count = self._pong_miss_count
                     self._connected = False
                     if self._ws and not self._ws.closed:
@@ -429,11 +478,13 @@ class ConnectionMux:
                 try:
                     self._ping_sent_at = time.time()
                     self._pong_miss_count += 1
-                    ping_frame = encode(Frame(
-                        session=first_session,
-                        role=first_role,
-                        type="ping",
-                    ))
+                    ping_frame = encode(
+                        Frame(
+                            session=first_session,
+                            role=first_role,
+                            type="ping",
+                        )
+                    )
                     await self._ws.send_str(ping_frame)
                 except Exception:
                     self._connected = False
